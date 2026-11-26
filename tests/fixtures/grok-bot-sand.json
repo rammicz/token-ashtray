@@ -1,0 +1,44 @@
+{
+  "billingBrand": "synthetic-brand",
+  "currentPeriodStart": "2026-11-22T15:51:00Z",
+  "cursorPlanName": "Synthetic plan",
+  "grokPlanLabel": "Synthetic Grok plan",
+  "hasAvailableUsage": true,
+  "hasNonZeroIncludedLimit": true,
+  "includedUsageSuperGrokPlan": "synthetic",
+  "nextResetTimestampUtc": "2026-11-29T15:51:00Z",
+  "onDemandSettings": {
+    "dashboardUrl": "https://example.invalid/dashboard",
+    "eligible": false,
+    "visible": false
+  },
+  "unifiedPlanMigration": {
+    "href": "https://example.invalid/migrate"
+  },
+  "upgradeOption": {
+    "reason": "synthetic"
+  },
+  "upgradeRecommendation": {
+    "cta": {
+      "label": "Synthetic",
+      "url": {
+        "url": "https://example.invalid/upgrade"
+      }
+    },
+    "kind": "synthetic",
+    "supportingText": "Synthetic"
+  },
+  "upgradeRecommendations": [
+    {
+      "cta": {
+        "label": "Synthetic",
+        "url": {
+          "url": "https://example.invalid/upgrade"
+        }
+      },
+      "kind": "synthetic",
+      "supportingText": "Synthetic"
+    }
+  ],
+  "usagePercent": 47.25
+}

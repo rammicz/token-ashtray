@@ -1,0 +1,21 @@
+{
+  "usr/share/common-licenses/GPL-2": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+  "usr/share/doc/gnome-shell-extension-appindicator/copyright": "c144c21e96657489e6a020cebca43a805faa50b8e0a83ba39a1697786451c3b9",
+  "usr/share/glib-2.0/schemas/org.gnome.shell.extensions.appindicator.gschema.xml": "4279c8fe4248afe31cd5e88258eaa816e24eb85590a6b85ece1fbafe8561c7ae",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/appIndicator.js": "6715572c5ccba0a523bfc783c82d71fa8214d88a27826486fc51081582c775cf",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/dbusMenu.js": "6f074906a161d246cd71671441d67f6ace00e52c5718773ce5afcaa1012ffe79",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/extension.js": "9561c731ff842d6bc8150eb8203fc1be36af3d4603638695897d58a876aa5006",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/iconCache.js": "f876da1fb3092f6f3185049a36f55421d713fd10f71e50eab7e8a7617ca31160",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/indicatorStatusIcon.js": "0ca10c31a72ef2b4205db6f5b126e4efbe35b9fe1aa3646264bb21a1e037ba50",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/interfaces-xml/DBusMenu.xml": "02f341b1ca2c1a13673af579ffe6a8f11c450ce6def3ef6e2c13d9edf588df07",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/interfaces-xml/StatusNotifierItem.xml": "35281c7eab6ba62046ca1e0cebd97370c1cd420cdfe5978ed193ce7c6855e3f2",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/interfaces-xml/StatusNotifierWatcher.xml": "a4fce8d92022608bef1a3cd02d81d045566eaa5aece2ed61b0a19b115e6ddb4d",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/interfaces.js": "22a501cae51d2f0bfd5e940c1a70d85b1f42f41965b9a1ee817b9cb5fafd29ce",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/metadata.json": "2aae0da60c29120ea2e8f99d1223b979a11f9241481a7c13e021767465032c80",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/prefs.js": "1cbbd922a3fe23e912102ae01fa1f6f591fe4788497dd7d67ff41ae2a2aca390",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/promiseUtils.js": "4ca5955f4fdb540a0d42c8c8d566bbbc2bdd0664b65daef42004936bb3bc2a6c",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/settingsManager.js": "c139306b2a23e96a4be04179133d92ba98afe016c166dc05383b2460b9079b20",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/statusNotifierWatcher.js": "e59ddf5a284ea43c9447bc787d0ade88ac54f74a4f485124b9eec1f052a50b6b",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/trayIconsManager.js": "fc3049cf7c39db0427e8da7a7c132ed6150af7b94a3789919da14d2e78a1d5d4",
+  "usr/share/gnome-shell/extensions/ubuntu-appindicators@ubuntu.com/util.js": "26fbdabcccce90c4ea7b214f02916e3f852cefbd11d16c95d51a89b9b94d1a6e"
+}

@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# local secrets / scratch
+/scratch
+.env
+*.local.toml
+.idea/
+target/
+
+/dist/
+/THIRD-PARTY.generated.md
+/RELEASE-METRICS.json
+/WINDOWS-RELEASE-METRICS.json
+/.serena/
+__pycache__/

@@ -1,0 +1,18 @@
+[
+  {
+    "artifact_bytes": 2098133,
+    "artifact_sha256": "627f1adfdf45c7610fcc903776ded808d2fe7c2fcbec48935ea89b23e84b1c2d",
+    "expected": "artifact-size-limit",
+    "name": "oversize-signed-x86_64-unknown-linux-gnu",
+    "target_signed_length_matches": true,
+    "target_signed_sha256_matches": true
+  },
+  {
+    "artifact_bytes": 2098149,
+    "artifact_sha256": "6b01abbc1c7b0de11520a056482f429fb14b49fd9ace54ae2224e5898cb287dd",
+    "expected": "artifact-size-limit",
+    "name": "oversize-signed-x86_64-pc-windows-msvc",
+    "target_signed_length_matches": true,
+    "target_signed_sha256_matches": true
+  }
+]

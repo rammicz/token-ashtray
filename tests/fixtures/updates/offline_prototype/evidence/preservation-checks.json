@@ -1,0 +1,29 @@
+{
+  "accepted": 5,
+  "all_observed_results_equal_original": true,
+  "date": "2026-11-21",
+  "fixture_manifest_sha256": "b65f268410bbfc8c9a3b9b8db5c7e65f2f1bb3a3bb30d3475cf246bef3cd9c03",
+  "generated_files_compared": 99,
+  "generated_tree_equals_independently_verified_original": true,
+  "original_proposal_sha256": "dfe2f65b3e974323c51e28c8a6ea0cd621a8ab5911cf0198926182b78aad73e5",
+  "preservation_base_sha": "be3b914150d851a683086f523d354aed89ca4be6",
+  "recorded_manifest_entries": 98,
+  "rejected": 41,
+  "scope_limits": [
+    "No G6/G7 change or owner approval",
+    "No new runtime dependency or service",
+    "No actual app release",
+    "No live entitlement/ACL/privacy evidence",
+    "Synthetic MinGW PE is not native Windows/MSVC acceptance",
+    "Partial TUF-style profile and public fixture key seeds only"
+  ],
+  "source_files_sha256": {
+    "check_identity.py": "601556d4302d0b15b0f9aa973167c7a675f481d8062dbe9d2daa5b39f854d98a",
+    "generate.py": "10e8699df69e012f455c7d8846b0c246255ce8b804b5918ef480fa77b0c50b0a",
+    "test_contract.py": "7a67cc9ffc17764f536f802fad99d88af287a88f84d16f072b5bde903be6182b",
+    "verify.py": "17980daa302743045a5b3b8130b447a780aab64582631be3ae9492f03b91ce04"
+  },
+  "status": "DRAFT / UNAPPROVED; bounded offline preservation only",
+  "test_methods": 3,
+  "vectors": 46
+}

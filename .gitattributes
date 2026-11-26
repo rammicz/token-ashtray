@@ -1,0 +1,18 @@
+# Render the same template bytes on Linux and Windows.
+about.hbs text eol=lf
+# Keep the complete upstream patch directly applicable on Windows too.
+vendor/eframe-glow-accessibility.patch text eol=lf
+vendor/winit-pointer-reentry.patch text eol=lf
+vendor/winit-theme-refresh.patch text eol=lf
+# Preserve upstream license text verbatim, including its mixed line endings.
+# CRLF in those verbatim texts is an end-of-line, not trailing whitespace.
+THIRD-PARTY.md -text whitespace=cr-at-eol
+# Keep vendored license inputs at their upstream bytes for notice generation.
+vendor/eframe/LICENSE-MIT -text
+vendor/eframe/LICENSE-APACHE -text
+vendor/winit/LICENSE -text
+# Run the private Linux desktop harnesses from Windows-hosted checkouts.
+tests/responsive_layout/session.sh text eol=lf
+tests/gnome42/session.sh text eol=lf
+# Golden update-verifier vectors are exact bytes from the Python fixture.
+tests/fixtures/updates/client_vectors/*.json -text

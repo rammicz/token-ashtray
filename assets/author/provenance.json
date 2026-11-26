@@ -1,0 +1,23 @@
+{
+  "source_page": "https://brand.youtube/youtube-logo/",
+  "download_url": "https://www.gstatic.com/marketing-cms/89/d9/cf95c4f345709f4998dc581221b0/youtube-icon.zip",
+  "archive_sha256": "ca9b5104387e0f7afcfda3a79c910449561112f1077177dd0d64f8c72f56e476",
+  "archive_member": "YouTube_Icon/Digital/01 Red/yt_icon_red_digital.png",
+  "downloaded_utc": "2026-10-24",
+  "files": {
+    "youtube-icon.png": {
+      "sha256": "1027b1b0517727adb9697155a270744381c3ce9b047b1c8bd8a9389dc7d07a83",
+      "dimensions": [
+        1255,
+        1075
+      ]
+    },
+    "youtube-icon-ui.png": {
+      "sha256": "6ebbec70a5c7a23dfc394a5c5e2c49e7373d4b19a81accb44ea5873bd72923ca",
+      "dimensions": [
+        251,
+        215
+      ]
+    }
+  }
+}

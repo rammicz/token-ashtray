@@ -1,0 +1,80 @@
+name: Release packages
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            binary: token-ashtray
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: token-ashtray.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          # Do not restore executables linked against a newer Ubuntu glibc.
+          prefix-key: ${{ runner.os == 'Linux' && 'v0-rust-ubuntu22' || 'v0-rust' }}
+      - run: cargo fmt --check
+      - run: cargo clippy --locked -- -D warnings
+      - run: cargo test --locked
+      - run: python tests/test_release_scripts.py
+      - name: Generate and verify third-party notices
+        shell: bash
+        run: |
+          cargo install cargo-about --version 0.9.2 --locked --features cli
+          cargo about generate --locked about.hbs -o THIRD-PARTY.generated.md
+          diff -u THIRD-PARTY.md THIRD-PARTY.generated.md
+      # Runs cargo build --release --locked with build-host path remapping; the
+      # packager refuses executables that embed runner home or checkout paths.
+      - run: python scripts/release_build.py --target ${{ matrix.target }} --bin token-ashtray
+      - name: Linux startup measurement
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0
+          dbus-run-session -- xvfb-run -a python3 scripts/release_metrics.py target/${{ matrix.target }}/release/${{ matrix.binary }} --output RELEASE-METRICS.json
+      - name: Windows startup measurement
+        if: runner.os == 'Windows'
+        run: python scripts/release_metrics.py target/${{ matrix.target }}/release/${{ matrix.binary }} --output RELEASE-METRICS.json
+      - name: Package executable, notices and install resources
+        run: python scripts/package_release.py target/${{ matrix.target }}/release/${{ matrix.binary }} RELEASE-METRICS.json dist/token-ashtray-${{ matrix.target }}.zip
+      - name: Verify packaged Windows application icon
+        if: runner.os == 'Windows'
+        run: python tests/test_windows_application_icon.py dist/token-ashtray-${{ matrix.target }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: token-ashtray-${{ matrix.target }}
+          path: dist/*.zip
+          if-no-files-found: error
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Create draft release with packages and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          (cd packages && sha256sum *.zip > SHA256SUMS)
+          printf '%s\n' "Token Ashtray $RELEASE_TAG for Linux x86_64 and Windows x64. Each ZIP contains the executable, its license, third-party notices and the install guide for its platform. Verify downloads against SHA256SUMS." > release-body.txt
+          gh release create "$RELEASE_TAG" packages/*.zip packages/SHA256SUMS --draft --title "$RELEASE_TAG" --notes-file release-body.txt

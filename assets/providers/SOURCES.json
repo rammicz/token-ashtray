@@ -1,0 +1,44 @@
+[
+  {
+    "provider": "claude",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/claude/color.svg",
+    "sha256": "142388a5decd7f65f5760d6e2a3ad2f4722d220d14ce5eaa408e7449eb429571",
+    "license": "CC0-1.0"
+  },
+  {
+    "provider": "codex",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/codex-openai/default.svg",
+    "sha256": "5f424b10216e17cd79c5f852138969453e031066e68a8d9c661e74534276ed9c",
+    "license": "MIT"
+  },
+  {
+    "provider": "cursor",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/cursor/default.svg",
+    "sha256": "cd0e3e5d8991a4cdd4577f8896cd063105207665165c73e25a1ff918dd367eb7",
+    "license": "CC0-1.0"
+  },
+  {
+    "provider": "copilot",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/github-copilot/default.svg",
+    "sha256": "38b9324574b647fcda85d87642a0bf3c7804dcf4b7ad9f534f924de38a1dfbe4",
+    "license": "MIT"
+  },
+  {
+    "provider": "grok",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/grok/default.svg",
+    "sha256": "b20648e2f111d7fbc91f58b22d1e76e9885b68a163cb5a1010f7f11bf5840491",
+    "license": "MIT"
+  },
+  {
+    "provider": "kimi",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/kimi/default.svg",
+    "sha256": "0ba35ce31b57bb6db39d4e454925e39f88f46a3b52a07898bd8262c3902df7fc",
+    "license": "MIT"
+  },
+  {
+    "provider": "antigravity",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/google-antigravity/default.svg",
+    "sha256": "4ad13823e4020b2b32fb2d78d0fbc28fca07b37c509dbf1d0709a918afa3a24b",
+    "license": "MIT"
+  }
+]

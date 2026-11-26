@@ -1,0 +1,168 @@
+[
+  {
+    "id": "antigravity",
+    "short_name": "Antigravity",
+    "plan": "pro",
+    "price": null,
+    "meters": [
+      {
+        "label": "Gemini Models \u00b7 Weekly",
+        "used_percent": 25,
+        "resets_at": [
+          2027,
+          22,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "label": "Claude and GPT models \u00b7 Weekly",
+        "used_percent": 50,
+        "resets_at": [
+          2027,
+          22,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "usage_breakdown": [],
+    "status": "Live",
+    "detail": "Offline meter-presentation fixture",
+    "link": "https://example.invalid/usage/antigravity",
+    "fetched_at": null
+  },
+  {
+    "id": "claude",
+    "short_name": "Claude",
+    "plan": "pro",
+    "price": null,
+    "meters": [
+      {
+        "label": "Weekly",
+        "used_percent": 100,
+        "resets_at": [
+          2027,
+          22,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "usage_breakdown": [],
+    "status": "Live",
+    "detail": "Offline meter-presentation fixture",
+    "link": "https://example.invalid/usage/claude",
+    "fetched_at": null
+  },
+  {
+    "id": "codex",
+    "short_name": "Codex",
+    "plan": "pro",
+    "price": null,
+    "meters": [
+      {
+        "label": "Zero window",
+        "used_percent": 0,
+        "resets_at": [
+          2027,
+          22,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "label": "Fractional window",
+        "used_percent": 0.4,
+        "resets_at": null
+      },
+      {
+        "label": "ResearchModelIdentifierWithoutWordBreaks custom rolling allowance",
+        "used_percent": 23,
+        "resets_at": [
+          2027,
+          22,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "usage_breakdown": [],
+    "status": "Stale",
+    "detail": "Offline meter-presentation fixture",
+    "link": "https://example.invalid/usage/codex",
+    "fetched_at": [
+      2027,
+      15,
+      7,
+      53,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  {
+    "id": "grok",
+    "short_name": "Grok",
+    "plan": "pro",
+    "price": null,
+    "meters": [
+      {
+        "label": "Shared allowance",
+        "used_percent": 25,
+        "resets_at": [
+          2027,
+          22,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "usage_breakdown": [
+      {
+        "label": "Foreground requests",
+        "used_percent": 12
+      },
+      {
+        "label": "Background agents",
+        "used_percent": 8
+      }
+    ],
+    "status": "Live",
+    "detail": "Offline meter-presentation fixture",
+    "link": "https://example.invalid/usage/grok",
+    "fetched_at": null
+  }
+]

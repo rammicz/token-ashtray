@@ -1,0 +1,41 @@
+{
+  "_plan_info": {
+    "nextUpgrade": {
+      "description": "Synthetic",
+      "includedAmountCents": 0,
+      "includedUsagePeriod": "synthetic",
+      "name": "Synthetic",
+      "price": "synthetic",
+      "tier": "synthetic"
+    },
+    "planInfo": {
+      "billingCycleEnd": "1796000000000",
+      "planName": "Synthetic plan",
+      "price": "synthetic"
+    }
+  },
+  "autoBucketModels": ["synthetic-a", "synthetic-b", "synthetic-c"],
+  "autoModelSelectedDisplayMessage": "Synthetic",
+  "billingCycleEnd": "1796000000000",
+  "billingCycleStart": "1793400000000",
+  "displayMessage": "Synthetic",
+  "displayThreshold": 0,
+  "namedModelSelectedDisplayMessage": "Synthetic",
+  "planUsage": {
+    "apiPercentUsed": 0,
+    "autoPercentUsed": 100,
+    "bonusSpend": 0,
+    "bonusTooltip": "Synthetic",
+    "remainingBonus": false,
+    "totalPercentUsed": 50.5,
+    "totalSpend": 0
+  },
+  "spendLimitUsage": {
+    "individualLimit": 0,
+    "limitType": "synthetic",
+    "overallLimit": 0,
+    "overallRemaining": 0,
+    "pooledLimit": "0",
+    "pooledRemaining": "0"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-21",
+  "external_github_feature_probe": {
+    "anonymous": true,
+    "asset": "cli/cli v2.105.0 gh_2.105.0_checksums.txt",
+    "authorization_cookies_browser_session": false,
+    "bytes": 1971,
+    "final_host": "release-assets.githubusercontent.com",
+    "final_status": 200,
+    "initial_host": "github.com",
+    "project_distribution": false,
+    "redirect_status": 302,
+    "sha256": "4597138ea96e474c68001370c0a4955ff4834ba603c53900de6ebbef4cb0bed9",
+    "signed_query_recorded": false
+  },
+  "generated_files": {
+    "x86_64-pc-windows-msvc.targets.json": {
+      "length": 1636,
+      "sha256": "ca3b6d998f80862e8972080ec7dad78390e0179df8ed1337ea729fd617abb01f"
+    },
+    "x86_64-pc-windows-msvc.zip": {
+      "length": 3490612,
+      "sha256": "22a6cf1349e0b2362aff99674b67737947ca5346c457025aaa1ea716b9d5f4a0"
+    },
+    "x86_64-unknown-linux-gnu.targets.json": {
+      "length": 1766,
+      "sha256": "cb4ac935b04d27aecb93ec9577eb2ef57031be3d1b194693ac6ea0f1f6234966"
+    },
+    "x86_64-unknown-linux-gnu.zip": {
+      "length": 3526930,
+      "sha256": "8086bf0a2634e2e89171f7ee6a07015800c37ab9690dd14b1f16f934baa15f55"
+    }
+  },
+  "generation_identity": {
+    "byte_manifest_sha256": "896c13679e3190cbc989c6dde8f544b9fbbcfec909682b8b5f90105421933226",
+    "files_compared": 5,
+    "identity": "BYTE-FOR-BYTE IDENTICAL",
+    "manifest_entries_verified": 4
+  },
+  "limits": [
+    "Public test keys and nonexecutable synthetic app bytes only",
+    "No live Token Ashtray metadata or platform assets downloaded",
+    "No production TUF conformance, Linux setup/apply or native Windows acceptance",
+    "Generated examples stay outside source repository"
+  ],
+  "source_base_sha": "74276824f3521fc3c299c200d66cae8f55fc920f",
+  "status": "OFFLINE SYNTHETIC EXAMPLES; NOT PROJECT DOWNLOAD OR NATIVE ACCEPTANCE"
+}

@@ -1,0 +1,369 @@
+[
+  {
+    "artifact_sha256": "28d5b68eb1988aa58bef389dcfb93da5aca4c3c4eaa3d2e673ec4ca8e52c29bb",
+    "code": "verified",
+    "expected": "ACCEPT",
+    "expected_code": "verified",
+    "metadata_versions": {
+      "snapshot": 1,
+      "targets": 1,
+      "timestamp": 1
+    },
+    "name": "initial-n-x86_64-unknown-linux-gnu",
+    "outcome": "ACCEPT",
+    "root_version": 1,
+    "target": "x86_64-unknown-linux-gnu",
+    "version": "0.2.1"
+  },
+  {
+    "artifact_sha256": "dd0d47c5ec87b987a33be4e591cbe9b7f1a9402dcc47d8bc721895322a16c9d1",
+    "code": "verified",
+    "expected": "ACCEPT",
+    "expected_code": "verified",
+    "metadata_versions": {
+      "snapshot": 2,
+      "targets": 2,
+      "timestamp": 2
+    },
+    "name": "n-to-n-plus-one-x86_64-unknown-linux-gnu",
+    "outcome": "ACCEPT",
+    "root_version": 3,
+    "target": "x86_64-unknown-linux-gnu",
+    "version": "0.2.2"
+  },
+  {
+    "artifact_sha256": "f3fc46a92d09cf08e2fda6a0464e8f19e1988f169ae971fb4b7a61967e977755",
+    "code": "verified",
+    "expected": "ACCEPT",
+    "expected_code": "verified",
+    "metadata_versions": {
+      "snapshot": 1,
+      "targets": 1,
+      "timestamp": 1
+    },
+    "name": "initial-n-x86_64-pc-windows-msvc",
+    "outcome": "ACCEPT",
+    "root_version": 1,
+    "target": "x86_64-pc-windows-msvc",
+    "version": "0.2.1"
+  },
+  {
+    "artifact_sha256": "72728d5a99390d0ca639c5ce666edf3e97a26725f19bfd93f4502f37f9973925",
+    "code": "verified",
+    "expected": "ACCEPT",
+    "expected_code": "verified",
+    "metadata_versions": {
+      "snapshot": 2,
+      "targets": 2,
+      "timestamp": 2
+    },
+    "name": "n-to-n-plus-one-x86_64-pc-windows-msvc",
+    "outcome": "ACCEPT",
+    "root_version": 3,
+    "target": "x86_64-pc-windows-msvc",
+    "version": "0.2.2"
+  },
+  {
+    "artifact_sha256": "dd0d47c5ec87b987a33be4e591cbe9b7f1a9402dcc47d8bc721895322a16c9d1",
+    "code": "verified",
+    "expected": "ACCEPT",
+    "expected_code": "verified",
+    "metadata_versions": {
+      "snapshot": 2,
+      "targets": 2,
+      "timestamp": 2
+    },
+    "name": "long-offline-two-sequential-roots",
+    "outcome": "ACCEPT",
+    "root_version": 3,
+    "target": "x86_64-unknown-linux-gnu",
+    "version": "0.2.2"
+  },
+  {
+    "code": "no-upgrade",
+    "expected": "REJECT",
+    "expected_code": "no-upgrade",
+    "name": "same-version",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "no-upgrade",
+    "expected": "REJECT",
+    "expected_code": "no-upgrade",
+    "name": "older-version",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "not-stable-semver",
+    "expected": "REJECT",
+    "expected_code": "not-stable-semver",
+    "name": "prerelease",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "no-upgrade",
+    "expected": "REJECT",
+    "expected_code": "no-upgrade",
+    "name": "build-only-bump",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "not-stable-semver",
+    "expected": "REJECT",
+    "expected_code": "not-stable-semver",
+    "name": "leading-zero-version",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "unsupported-target",
+    "expected": "REJECT",
+    "expected_code": "unsupported-target",
+    "name": "unsupported-target",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "package-purpose",
+    "expected": "REJECT",
+    "expected_code": "package-purpose",
+    "name": "wrong-purpose",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "runtime-constraint",
+    "expected": "REJECT",
+    "expected_code": "runtime-constraint",
+    "name": "wrong-runtime",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "product-channel",
+    "expected": "REJECT",
+    "expected_code": "product-channel",
+    "name": "wrong-channel",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "target-mapping",
+    "expected": "REJECT",
+    "expected_code": "target-mapping",
+    "name": "wrong-target",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "package-purpose",
+    "expected": "REJECT",
+    "expected_code": "package-purpose",
+    "name": "wrong-artifact-kind",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-path",
+    "expected": "REJECT",
+    "expected_code": "artifact-path",
+    "name": "arbitrary-url",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "target-mapping",
+    "expected": "REJECT",
+    "expected_code": "target-mapping",
+    "name": "duplicate-target-mapping",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-hash",
+    "expected": "REJECT",
+    "expected_code": "artifact-hash",
+    "name": "bit-flip-x86_64-unknown-linux-gnu",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-length",
+    "expected": "REJECT",
+    "expected_code": "artifact-length",
+    "name": "truncated-x86_64-unknown-linux-gnu",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-length",
+    "expected": "REJECT",
+    "expected_code": "artifact-length",
+    "name": "appended-x86_64-unknown-linux-gnu",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-size-limit",
+    "expected": "REJECT",
+    "expected_code": "artifact-size-limit",
+    "name": "oversize-signed-x86_64-unknown-linux-gnu",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-hash",
+    "expected": "REJECT",
+    "expected_code": "artifact-hash",
+    "name": "bit-flip-x86_64-pc-windows-msvc",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-length",
+    "expected": "REJECT",
+    "expected_code": "artifact-length",
+    "name": "truncated-x86_64-pc-windows-msvc",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-length",
+    "expected": "REJECT",
+    "expected_code": "artifact-length",
+    "name": "appended-x86_64-pc-windows-msvc",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "artifact-size-limit",
+    "expected": "REJECT",
+    "expected_code": "artifact-size-limit",
+    "name": "oversize-signed-x86_64-pc-windows-msvc",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "package-binary-hash",
+    "expected": "REJECT",
+    "expected_code": "package-binary-hash",
+    "name": "manifest-binary-mismatch",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "unsafe-zip-path",
+    "expected": "REJECT",
+    "expected_code": "unsafe-zip-path",
+    "name": "zip-traversal",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "unsafe-zip-type",
+    "expected": "REJECT",
+    "expected_code": "unsafe-zip-type",
+    "name": "zip-symlink",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "duplicate-zip-member",
+    "expected": "REJECT",
+    "expected_code": "duplicate-zip-member",
+    "name": "zip-duplicate",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "rollback-timestamp",
+    "expected": "REJECT",
+    "expected_code": "rollback-timestamp",
+    "name": "rollback-timestamp",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "expired-timestamp",
+    "expected": "REJECT",
+    "expected_code": "expired-timestamp",
+    "name": "expired-timestamp",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "rollback-snapshot",
+    "expected": "REJECT",
+    "expected_code": "rollback-snapshot",
+    "name": "rollback-snapshot",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "expired-snapshot",
+    "expected": "REJECT",
+    "expected_code": "expired-snapshot",
+    "name": "expired-snapshot",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "rollback-targets",
+    "expected": "REJECT",
+    "expected_code": "rollback-targets",
+    "name": "rollback-targets",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "expired-targets",
+    "expected": "REJECT",
+    "expected_code": "expired-targets",
+    "name": "expired-targets",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "signature-targets",
+    "expected": "REJECT",
+    "expected_code": "signature-targets",
+    "name": "modified-metadata",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "signature-targets",
+    "expected": "REJECT",
+    "expected_code": "signature-targets",
+    "name": "revoked-targets-key",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "signature-targets",
+    "expected": "REJECT",
+    "expected_code": "signature-targets",
+    "name": "unknown-targets-key",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "metadata-hash",
+    "expected": "REJECT",
+    "expected_code": "metadata-hash",
+    "name": "mix-match",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "expired-timestamp",
+    "expected": "REJECT",
+    "expected_code": "expired-timestamp",
+    "name": "freeze-expired-clock",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "root-sequence",
+    "expected": "REJECT",
+    "expected_code": "root-sequence",
+    "name": "skipped-root",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "signature-root",
+    "expected": "REJECT",
+    "expected_code": "signature-root",
+    "name": "root-only-new",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "signature-root",
+    "expected": "REJECT",
+    "expected_code": "signature-root",
+    "name": "root-only-old",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "signature-root",
+    "expected": "REJECT",
+    "expected_code": "signature-root",
+    "name": "root-duplicate-signature",
+    "outcome": "REJECT"
+  },
+  {
+    "code": "expired-root",
+    "expected": "REJECT",
+    "expected_code": "expired-root",
+    "name": "expired-root",
+    "outcome": "REJECT"
+  }
+]

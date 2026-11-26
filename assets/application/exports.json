@@ -1,0 +1,39 @@
+{
+  "source": "reference-original.png",
+  "source_sha256": "3fa3552f44825f53b77397291673149242d602f9f0b5a7384381dd3a89997495",
+  "pillow": "9.0.1",
+  "resampling": "premultiplied RGBA, Lanczos, original canvas",
+  "exports": {
+    "token-ashtray-16.png": {
+      "size": 16,
+      "sha256": "23cb921ff8eb119438167790ccb763cffffda419679a8f432901ae33a947fc13",
+      "rgba_sha256": "fbfce30c8063a0cb30a13647d5432a8db2330a4b9c5eea81c9df8fe1c6e69f48"
+    },
+    "token-ashtray-24.png": {
+      "size": 24,
+      "sha256": "8ee76fa1e655c36530ae3f9207bd9b99a86154d208f07ab52b7b8947b9a7fe51",
+      "rgba_sha256": "0e4076d6d7984ae2b54dbf2a64cf21ccd105ee9e6c67879c492602cac7a54856"
+    },
+    "token-ashtray-32.png": {
+      "size": 32,
+      "sha256": "d9c525e2cec85832e69a7a06e3a3f81bbff276565372990a602c52a8fe0f8f72",
+      "rgba_sha256": "30d990fe6ac5916131b4b043f22aaaef9049920fead4ec6b209f7f25d1e91fca"
+    },
+    "token-ashtray-48.png": {
+      "size": 48,
+      "sha256": "1956f09086eda0a878bf0f9742a7a5eab670fc2f675824779b4ab089b7ac1510",
+      "rgba_sha256": "5021f964455b12b808145c366b706c5309f1b234087f9f2887813fab6767012d"
+    },
+    "token-ashtray-64.png": {
+      "size": 64,
+      "sha256": "38706757986ae08e4f981fed1e96dd07984b244cf31aedf43c52dbd4514b8f88",
+      "rgba_sha256": "84f0e299c885cfb252c2c03c3e9536ea420f0cd0e4f798c83443c5bbc87b409c"
+    },
+    "token-ashtray-256.png": {
+      "size": 256,
+      "sha256": "71e7ac481a95bb43c9647e32e87b94921e9cb64d8bfc1c4667ec73d37fdd9467",
+      "rgba_sha256": "40ad222d4c16f07e278fabb24d06d8190275cfa16df552b846c54b91ee17672d"
+    }
+  },
+  "ico_sha256": "ee418e3cc0c32cfd7ae3d28b22bacb24c51394131490eb5c822ca4e628bea867"
+}

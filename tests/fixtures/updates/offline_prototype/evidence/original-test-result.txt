@@ -1,0 +1,8 @@
+test_expected_results (test_contract.FixtureContract) ... ok
+test_oversized_artifacts_are_authentically_bound (test_contract.FixtureContract) ... ok
+test_required_signed_payloads_exist (test_contract.FixtureContract) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.149s
+
+OK

@@ -1,0 +1,54 @@
+name: Check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-and-windows:
+    name: ${{ matrix.os }} checks
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+      - run: cargo fmt --check
+      - run: cargo clippy --locked -- -D warnings
+      - run: cargo test --locked
+      - run: python tests/test_release_scripts.py
+      - name: Verify packaged Windows application icon
+        if: runner.os == 'Windows'
+        run: |
+          # Runs cargo build --release --locked with path remapping; the packager refuses unremapped builds.
+          python scripts/release_build.py --target x86_64-pc-windows-msvc --bin token-ashtray
+          python scripts/release_metrics.py target/x86_64-pc-windows-msvc/release/token-ashtray.exe --output RELEASE-METRICS.json
+          python scripts/package_release.py target/x86_64-pc-windows-msvc/release/token-ashtray.exe RELEASE-METRICS.json dist/token-ashtray-x86_64-pc-windows-msvc.zip
+          python tests/test_windows_application_icon.py dist/token-ashtray-x86_64-pc-windows-msvc.zip
+
+  macos-check:
+    name: macOS compile check only
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: true
+      # This proves only that cfg-gated code compiles. macOS is not supported in v1.
+      - run: cargo check --locked
+
+  third-party-notices:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-about --version 0.9.2 --locked --features cli
+      - run: cargo about generate --locked about.hbs -o THIRD-PARTY.generated.md
+      - run: diff -u THIRD-PARTY.md THIRD-PARTY.generated.md

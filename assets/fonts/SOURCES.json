@@ -1,0 +1,11 @@
+{
+  "family": "Open Sans",
+  "face": "SemiBold",
+  "weight": 600,
+  "size_bytes": 150592,
+  "sha256": "4a413711684a9dd564ef0f1c10cb62b5d9f7eb6df2cff962f5341a6ecd5f64ae",
+  "source": "https://raw.githubusercontent.com/googlefonts/opensans/6cbc400d4855abee59d85c4ed871d510399bce7b/fonts/ttf/OpenSans-SemiBold.ttf",
+  "license_source": "https://raw.githubusercontent.com/googlefonts/opensans/6cbc400d4855abee59d85c4ed871d510399bce7b/OFL.txt",
+  "license_sha256": "01cd5ffb3a528c219a86e49a814c6c53bd8a69b9a3c305dd237074ba1c811af7",
+  "modified": false
+}
