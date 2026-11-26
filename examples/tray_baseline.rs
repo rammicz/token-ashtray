@@ -45,7 +45,7 @@ fn main() {
                 .values()
                 .map(|card| platform::TrayProvider {
                     name: card.short_name.clone(),
-                    remaining: card.remaining(),
+                    used: card.used(),
                     reset: None,
                 })
                 .collect(),
