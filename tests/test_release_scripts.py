@@ -10,7 +10,7 @@ from test_linux_setup import LinuxSetupPackage, NativeMenuSelection  # noqa: F40
 from test_install_resources import (  # noqa: F401
     LinuxInstall, PackageResources, PowerShellInstall, ReleaseBuildFlags,
 )
-from test_public_export import CommandLine, Export, Scan  # noqa: F401
+from test_public_export import CommandLine, Export, GitAttribution, Scan  # noqa: F401
 from test_windows_setup import SetupInputs, SetupPreflight, UpdateHandoff  # noqa: F401
 
 

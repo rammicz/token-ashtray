@@ -1,6 +1,7 @@
 """Public export: omitted internal records, exact bytes and a redacting privacy scan."""
 import getpass
 import hashlib
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -190,6 +191,196 @@ class CommandLine(unittest.TestCase):
         result = subprocess.run([sys.executable, str(SCRIPT), "HEAD"], capture_output=True,
                                 text=True, check=False)
         self.assertEqual(result.returncode, 2)
+
+    def test_usage_rejects_conflicting_or_missing_check_git_args(self):
+        for extra in (["--scan", "--check-git", "HEAD"], ["--check-git"]):
+            result = subprocess.run([sys.executable, str(SCRIPT), *extra], capture_output=True,
+                                    text=True, check=False)
+            self.assertEqual(result.returncode, 2, extra)
+
+    def test_check_git_cli_fails_with_redacted_counts_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            author = "personal.user" + "@" + "example.invalid"
+            tagger = "tagger.secret" + "@" + "private.invalid"
+            GitAttribution.init_repo(source)
+            GitAttribution.commit(source, "README.md", "# Demo\n", author, author)
+            GitAttribution.annotated_tag(source, "v0.0.1", "release tag", tagger)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--repo", str(source),
+                 "--check-git", "HEAD", "refs/tags/v0.0.1"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("commit-author-email: 1", result.stdout)
+            self.assertIn("commit-committer-email: 1", result.stdout)
+            self.assertIn("tagger-email: 1", result.stdout)
+            combined = result.stdout + result.stderr
+            for leaked in ("personal.user", "example.invalid", "tagger.secret", "private.invalid"):
+                self.assertNotIn(leaked, combined)
+
+    def test_check_git_cli_passes_on_clean_repo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
+            legacy = "fixture-user" + "@" + "users.noreply.github.com"
+            GitAttribution.init_repo(source)
+            GitAttribution.commit(source, "README.md", "# Clean\n", noreply, noreply)
+            subprocess.run(["git", "tag", "v0.1.0"], cwd=source, check=True)
+            GitAttribution.annotated_tag(source, "v0.2.0", "clean annotated tag", legacy)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "--repo", str(source),
+                 "--check-git", "HEAD", "refs/tags/v0.1.0", "refs/tags/v0.2.0"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("0 findings", result.stdout)
+
+    def test_check_git_cli_rejects_unknown_ref(self):
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--check-git", "refs/heads/does-not-exist-test-ref"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown git ref", result.stderr)
+
+
+class GitAttribution(unittest.TestCase):
+    @staticmethod
+    def init_repo(root):
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+    @staticmethod
+    def commit(root, name, content, author_email, committer_email):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        subprocess.run(["git", "add", name], cwd=root, check=True)
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_AUTHOR_NAME": "Fixture Author",
+            "GIT_AUTHOR_EMAIL": author_email,
+            "GIT_COMMITTER_NAME": "Fixture Committer",
+            "GIT_COMMITTER_EMAIL": committer_email,
+        }
+        subprocess.run(["git", "commit", "-q", "-m", f"add {name}"], cwd=root, env=env, check=True)
+
+    @staticmethod
+    def annotated_tag(root, tag_name, message, tagger_email, target="HEAD"):
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_COMMITTER_NAME": "Fixture Tagger",
+            "GIT_COMMITTER_EMAIL": tagger_email,
+        }
+        subprocess.run(["git", "-c", "advice.nestedTag=false", "tag", "-a", tag_name, target, "-m", message],
+                       cwd=root, env=env, check=True)
+
+    def test_non_approved_commit_and_tag_emails_are_counted_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            self.init_repo(source)
+            author = "personal.user" + "@" + "example.invalid"
+            committer = "corp.builder" + "@" + "example.org"
+            tagger = "tagger.person" + "@" + "example.net"
+            self.commit(source, "a.txt", "hello\n", author, committer)
+            self.annotated_tag(source, "v0.0.1", "annotated", tagger)
+            findings = public_export.check_git_refs(["HEAD", "refs/tags/v0.0.1"], repository=source)
+            self.assertEqual(findings, {
+                "commit-author-email": 1,
+                "commit-committer-email": 1,
+                "tagger-email": 1,
+            })
+
+    def test_mixed_commits_count_only_non_approved_identities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            self.init_repo(source)
+            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
+            legacy = "fixture-user" + "@" + "users.noreply.github.com"
+            bot = "41898282+github-actions[bot]" + "@" + "users.noreply.github.com"
+            self.commit(source, "a.txt", "1\n", noreply, "builder" + "@" + "example.invalid")
+            self.commit(source, "b.txt", "2\n", "author" + "@" + "example.invalid", legacy)
+            self.commit(source, "c.txt", "3\n", bot, bot)
+            findings = public_export.check_git_refs(["HEAD"], repository=source)
+            self.assertEqual(findings, {
+                "commit-author-email": 1,
+                "commit-committer-email": 1,
+            })
+
+    def test_clean_noreply_commits_lightweight_and_annotated_tags_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            self.init_repo(source)
+            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
+            legacy = "fixture-user" + "@" + "users.noreply.github.com"
+            self.commit(source, "a.txt", "hello\n", noreply, noreply)
+            subprocess.run(["git", "tag", "v0.1.0"], cwd=source, check=True)
+            decoy = "release\n\ntagger Fake <bad" + "@" + "example.invalid> 1700000000 +0000"
+            self.annotated_tag(source, "v0.2.0", decoy, legacy)
+            findings = public_export.check_git_refs(
+                ["HEAD", "refs/tags/v0.1.0", "refs/tags/v0.2.0"], repository=source
+            )
+            self.assertEqual(findings, {})
+
+    def test_nested_annotated_tag_checks_every_tag_object(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            self.init_repo(source)
+            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
+            bad = "nested.tagger" + "@" + "example.invalid"
+            self.commit(source, "a.txt", "hello\n", noreply, noreply)
+            self.annotated_tag(source, "v0.1.0", "inner", bad)
+            self.annotated_tag(source, "v0.1.0-wrap", "outer", noreply, target="refs/tags/v0.1.0")
+            findings = public_export.check_git_refs(["refs/tags/v0.1.0-wrap"], repository=source)
+            self.assertEqual(findings, {"tagger-email": 1})
+
+    def test_invalid_empty_and_non_commit_refs_raise_export_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            self.init_repo(source)
+            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
+            self.commit(source, "a.txt", "hello\n", noreply, noreply)
+            for bad_refs in ([], ["refs/heads/nonexistent"], ["HEAD^{tree}"]):
+                with self.assertRaises(public_export.ExportError, msg=bad_refs):
+                    public_export.check_git_refs(bad_refs, repository=source)
+
+    def test_approved_git_email_validation(self):
+        approved = [
+            "12345+fixture" + "@" + "users.noreply.github.com",
+            "99999+Example-User" + "@" + "USERS.NOREPLY.GITHUB.COM",
+            "fixture-user" + "@" + "users.noreply.github.com",
+            "a" + "@" + "users.noreply.github.com",
+            "41898282+github-actions[bot]" + "@" + "users.noreply.github.com",
+        ]
+        rejected = [
+            "",
+            "personal" + "@" + "example.invalid",
+            "12345+user" + "@" + "users.noreply.github.com.evil.com",
+            "abc+user" + "@" + "users.noreply.github.com",
+            "+user" + "@" + "users.noreply.github.com",
+            "12345+" + "@" + "users.noreply.github.com",
+            "user.name" + "@" + "users.noreply.github.com",
+            "-user" + "@" + "users.noreply.github.com",
+            "user-" + "@" + "users.noreply.github.com",
+        ]
+        for email in approved:
+            self.assertTrue(public_export.approved_git_email(email), email)
+        for email in rejected:
+            self.assertFalse(public_export.approved_git_email(email), email)
+
+    def test_live_repository_head_tree_and_history_are_clean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory, "public")
+            public_export.export("HEAD", target)
+            self.assertEqual(public_export.Scanner(target).scan(), {})
+        self.assertEqual(public_export.check_git_refs(["HEAD"]), {})
 
 
 if __name__ == "__main__":

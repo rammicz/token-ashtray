@@ -1,7 +1,8 @@
 """Export the public source tree from one git ref and scan it for private data.
 
-    python3 scripts/public_export.py REF TARGET   # export REF into an empty TARGET, then scan
-    python3 scripts/public_export.py --scan TREE  # scan an existing tree only
+    python3 scripts/public_export.py REF TARGET        # export REF into an empty TARGET, then scan
+    python3 scripts/public_export.py --scan TREE       # scan an existing tree only
+    python3 scripts/public_export.py --check-git REF.. # check commit/tagger emails on REF...
 
 The export keeps the committed blob bytes (no line-ending conversion) and omits
 internal records: QA evidence folders, a verifier session report, agent
@@ -11,11 +12,13 @@ exported file, as raw bytes and as UTF-16LE text, for credentials, personal
 e-mail addresses, this host's git identity and local paths, user profile
 paths, internal host names, private tracker links, internal queue markers,
 conversation share links, image metadata chunks and Markdown links to files the export lacks.
+The --check-git mode verifies that commits and annotated tag objects reachable
+from the given refs use publication-safe GitHub noreply email addresses.
 
 Reports carry fixed labels, exported relative paths and counts only, never the
-matched text, so no account or host name is printed. Host names are held as
-SHA-256 digests for the same reason. The exit status is 1 when anything is
-found and 2 when the export itself fails.
+matched text or email addresses, so no account or host name is printed. Host names
+are held as SHA-256 digests for the same reason. The exit status is 1 when anything is
+found and 2 when the export or git inspection itself fails.
 """
 
 import argparse
@@ -91,6 +94,11 @@ PNG_RENDERING = {b"IHDR", b"PLTE", b"IDAT", b"IEND", b"tRNS", b"gAMA", b"cHRM", 
 SVG_METADATA = re.compile(rb"<metadata|<rdf:|\bsodipodi:|\binkscape:")
 MARKDOWN_LINK = re.compile(r"\]\(\s*<?([^)\s>]+)|^\s{0,3}\[[^\]]+\]:\s*<?(\S+?)>?(?:\s|$)", re.M)
 SCHEME = re.compile(r"[a-z][a-z0-9+.-]*:", re.I)
+# GitHub noreply email formats: <id>+<login>@users.noreply.github.com or <login>@users.noreply.github.com.
+APPROVED_GIT_EMAIL = re.compile(
+    r"\A(?:[0-9]+\+)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\[bot\])?@users\.noreply\.github\.com\Z"
+)
+TAGGER_HEADER = re.compile(r"^tagger .*<([^>]*)>\s+\d+\s+[+-]\d{4}$")
 
 
 class ExportError(RuntimeError):
@@ -210,6 +218,111 @@ class Scanner:
         return findings
 
 
+def approved_git_email(email):
+    """Return True only for publication-safe GitHub noreply email addresses."""
+    return bool(APPROVED_GIT_EMAIL.match(email.lower()))
+
+
+def run_git(args, repository, input_text=None):
+    return subprocess.run(
+        ["git", *args],
+        cwd=repository,
+        input=input_text,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
+def parse_tag_object(text):
+    """Extract (tagger_email_or_none, target_oid, target_type) from raw git tag headers."""
+    email = None
+    target_oid = None
+    target_type = None
+    for line in text.splitlines():
+        if not line:
+            break
+        if line.startswith("object "):
+            target_oid = line[7:].strip()
+        elif line.startswith("type "):
+            target_type = line[5:].strip()
+        elif line.startswith("tagger "):
+            match = TAGGER_HEADER.match(line)
+            email = match.group(1) if match else ""
+    return email, target_oid, target_type
+
+
+def check_git_refs(refs, repository=ROOT):
+    """Count non-approved author, committer and tagger emails reachable from REFS."""
+    refs = list(refs)
+    if not refs:
+        raise ExportError("no git refs given")
+    repository = Path(repository)
+    if not repository.is_dir():
+        raise ExportError(f"git repository directory not found: {repository}")
+
+    counts = Counter()
+    commit_oids = []
+    seen_commits = set()
+    seen_tags = set()
+
+    for ref in refs:
+        resolved = run_git(["rev-parse", "--verify", "--quiet", "--end-of-options", ref], repository)
+        if resolved.returncode:
+            raise ExportError(f"unknown git ref: {ref}")
+        oid = resolved.stdout.strip()
+        kind_result = run_git(["cat-file", "-t", oid], repository)
+        if kind_result.returncode:
+            raise ExportError(f"unable to inspect git ref: {ref}")
+        kind = kind_result.stdout.strip()
+        if kind not in ("commit", "tag"):
+            raise ExportError(f"unsupported git object type for {ref}: {kind}")
+
+        while kind == "tag":
+            if oid in seen_tags:
+                break
+            seen_tags.add(oid)
+            tag_result = run_git(["cat-file", "tag", oid], repository)
+            if tag_result.returncode:
+                raise ExportError(f"unable to read git tag: {ref}")
+            email, target_oid, target_type = parse_tag_object(tag_result.stdout)
+            if email is not None and not approved_git_email(email):
+                counts["tagger-email"] += 1
+            if not target_oid or not target_type:
+                break
+            oid, kind = target_oid, target_type
+
+        if kind == "commit" and oid not in seen_commits:
+            seen_commits.add(oid)
+            commit_oids.append(oid)
+
+    if commit_oids:
+        log = run_git(["log", "--format=%ae%x00%ce", "--stdin"], repository,
+                      input_text="\n".join(commit_oids) + "\n")
+        if log.returncode:
+            raise ExportError("git log failed: " + log.stderr.strip())
+        for line in log.stdout.splitlines():
+            author, _, committer = line.partition("\x00")
+            if not approved_git_email(author):
+                counts["commit-author-email"] += 1
+            if not approved_git_email(committer):
+                counts["commit-committer-email"] += 1
+
+    return dict(+counts)
+
+
+def report_git(findings):
+    if not findings:
+        return "public_export: git metadata clean (0 findings)"
+    total = sum(findings.values())
+    lines = [f"public_export: git metadata found {total} non-approved email(s)"]
+    for label, count in sorted(findings.items()):
+        lines.append(f"  {label}: {count}")
+    return "\n".join(lines)
+
+
 def report(findings):
     if not findings:
         return "public_export: privacy scan clean (0 findings)"
@@ -228,15 +341,28 @@ def report(findings):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--scan", action="store_true", help="scan TREE without exporting")
-    parser.add_argument("paths", nargs="+", metavar="REF TARGET | TREE")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--scan", action="store_true", help="scan TREE without exporting")
+    mode.add_argument("--check-git", action="store_true",
+                      help="check commit and tagger emails reachable from REF...")
+    parser.add_argument("--repo", type=Path, default=ROOT,
+                        help="git repository directory (defaults to this repository)")
+    parser.add_argument("paths", nargs="+", metavar="REF TARGET | TREE | REF...")
     args = parser.parse_args()
+    if args.check_git:
+        try:
+            findings = check_git_refs(args.paths, repository=args.repo)
+        except ExportError as error:
+            print(f"public_export: {error}", file=sys.stderr)
+            return 2
+        print(report_git(findings))
+        return 1 if findings else 0
     if args.scan != (len(args.paths) == 1):
-        parser.error("give REF and TARGET, or --scan and one TREE")
+        parser.error("give REF and TARGET, --scan and one TREE, or --check-git and REF...")
     tree = Path(args.paths[-1])
     if not args.scan:
         try:
-            kept, omitted = export(args.paths[0], tree)
+            kept, omitted = export(args.paths[0], tree, repository=args.repo)
         except ExportError as error:
             print(f"public_export: {error}", file=sys.stderr)
             return 2
