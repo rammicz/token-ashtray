@@ -95,3 +95,109 @@ fn missing_or_unreadable_reset_falls_back_or_stays_unknown() {
     payload["resetTime"] = json!("2026-11-29T15:51:00");
     assert_eq!(reset_of(&payload), None);
 }
+
+#[test]
+fn unwraps_nested_object_envelopes_and_ignores_scalar_status() {
+    for key in ["usageStatus", "sandUsageStatus", "status", "config"] {
+        let payload = json!({
+            key: {
+                "usagePercent": 42.5,
+                "nextResetTimestampUtc": "2026-11-29T15:51:00Z"
+            }
+        });
+        let usage = grok_bot().parse(&payload).unwrap();
+        assert_eq!(usage.meters.len(), 1, "{key}");
+        assert_eq!(usage.meters[0].label, "Grok Bot", "{key}");
+        assert_eq!(usage.meters[0].used_percent, 42.5, "{key}");
+        assert_eq!(usage.meters[0].resets_at, Some(weekly_reset()), "{key}");
+    }
+
+    // Scalar "status": "ok" must not swallow top-level fields.
+    let scalar_status = json!({
+        "status": "ok",
+        "usagePercent": 42.5,
+        "nextResetTimestampUtc": "2026-11-29T15:51:00Z"
+    });
+    let usage = grok_bot().parse(&scalar_status).unwrap();
+    assert_eq!(usage.meters.len(), 1);
+    assert_eq!(usage.meters[0].used_percent, 42.5);
+    assert_eq!(usage.meters[0].resets_at, Some(weekly_reset()));
+
+    // Outer reset still fills an envelope that only reports usagePercent.
+    let split_reset = json!({
+        "usageStatus": {"usagePercent": 42.5},
+        "nextResetTimestampUtc": "2026-11-29T15:51:00Z"
+    });
+    assert_eq!(reset_of(&split_reset), Some(weekly_reset()));
+
+    // An unrelated nested object under config/status does not hide top-level usagePercent.
+    let unrelated_config = json!({
+        "config": {"featureEnabled": true},
+        "usagePercent": 42.5,
+        "nextResetTimestampUtc": "2026-11-29T15:51:00Z"
+    });
+    let usage = grok_bot().parse(&unrelated_config).unwrap();
+    assert_eq!(usage.meters.len(), 1);
+    assert_eq!(usage.meters[0].used_percent, 42.5);
+    assert_eq!(usage.meters[0].resets_at, Some(weekly_reset()));
+}
+
+#[test]
+fn snake_case_percent_and_utc_reset_preserve_scale_and_offset_rules() {
+    for (reported, expected) in [(0.6, 0.6), (1.0, 1.0), (47.3, 47.3)] {
+        let payload = json!({
+            "usage_percent": reported,
+            "next_reset_timestamp_utc": "2026-11-29 15:51:00"
+        });
+        let usage = grok_bot().parse(&payload).unwrap();
+        assert_eq!(usage.meters.len(), 1, "{reported}");
+        assert_eq!(usage.meters[0].used_percent, expected, "{reported}");
+        assert_eq!(
+            usage.meters[0].resets_at,
+            Some(weekly_reset()),
+            "{reported}"
+        );
+    }
+
+    let wrapped_snake = json!({
+        "sandUsageStatus": {
+            "usage_percent": 0.6,
+            "next_reset_timestamp_utc": "2026-11-29T15:51:00"
+        }
+    });
+    let usage = grok_bot().parse(&wrapped_snake).unwrap();
+    assert_eq!(usage.meters[0].used_percent, 0.6);
+    assert_eq!(usage.meters[0].resets_at, Some(weekly_reset()));
+}
+
+#[test]
+fn pooled_enterprise_or_zero_included_limit_omits_meters() {
+    for payload in [
+        json!({"usesPooledEnterpriseAllowance": true, "usagePercent": 47.25}),
+        json!({"uses_pooled_enterprise_allowance": true, "usage_percent": 47.25}),
+        json!({"includedLimitZero": true, "usagePercent": 0}),
+        json!({"included_limit_zero": true, "usage_percent": 0}),
+        json!({"usageStatus": {"usesPooledEnterpriseAllowance": true, "usagePercent": 47.25}}),
+        json!({"sandUsageStatus": {"included_limit_zero": true, "usage_percent": 15}}),
+        json!({"usesPooledEnterpriseAllowance": true, "usageStatus": {"usagePercent": 47.25}}),
+    ] {
+        let err = grok_bot().parse(&payload).err().unwrap_or_else(|| {
+            panic!("expected suppressed payload to omit meters: {payload}");
+        });
+        assert!(
+            err.message.contains("no recognised quota meters"),
+            "{payload}: {}",
+            err.message
+        );
+    }
+
+    // Explicit false suppression flags and hasNonZeroIncludedLimit: false do NOT suppress.
+    let not_suppressed = json!({
+        "usesPooledEnterpriseAllowance": false,
+        "includedLimitZero": false,
+        "hasNonZeroIncludedLimit": false,
+        "usagePercent": 47.25
+    });
+    let usage = grok_bot().parse(&not_suppressed).unwrap();
+    assert_eq!(usage.meters[0].used_percent, 47.25);
+}

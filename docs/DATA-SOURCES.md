@@ -232,16 +232,21 @@ POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetPlanInfo
 POST https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus
 POST https://api2.cursor.sh/aiserver.v1.SandBoxService/GetSandUsageStatus
 GET  https://api2.cursor.sh/auth/usage
-GET  https://cursor.com/api/dashboard/get-current-period-usage
+POST https://cursor.com/api/dashboard/get-current-period-usage
 GET  https://cursor.com/api/usage-summary
 ```
 
 Notes:
 
-- `api2.cursor.sh/aiserver.v1.*` are Connect/gRPC-web style routes: POST with a
-  JSON body (`{}` where no arguments are needed).
-- The `cursor.com/api/*` pair and the `api2` pair overlap. Prefer `api2`; keep
-  `cursor.com` as fallback when `api2` returns an unexpected shape.
+- `api2.cursor.sh/aiserver.v1.*` and `cursor.com/api/dashboard/get-current-period-usage`
+  expect `POST` with a JSON body (`{}` where no arguments are needed);
+  `cursor.com/api/usage-summary` and `api2.cursor.sh/auth/usage` use `GET`.
+- The `cursor.com/api/*` pair and the `api2` pair overlap. Prefer `api2`; fall
+  back through `POST cursor.com/api/dashboard/get-current-period-usage`,
+  `GET cursor.com/api/usage-summary`, and `GET api2.cursor.sh/auth/usage` on
+  unrecognised HTTP 200 shapes or non-auth/non-429 errors (such as `404`, `405`,
+  `5xx`, invalid JSON, or transport errors). HTTP `401` (`Reconnect`) and `429`
+  (`Retry-After`) remain terminal on both primary and fallback routes.
 - The value read from SQLite may come back as `TEXT` or as `BLOB`. Handle both;
   decode bytes as UTF-8 lossily.
 - Two `GetSandUsageStatus` routes exist under different services. Version skew —
@@ -268,15 +273,23 @@ were captured. The account was on Cursor's Free plan.
 | `displayMessage`, `autoModelSelectedDisplayMessage`, `namedModelSelectedDisplayMessage` | string | not read |
 | `displayThreshold` | number (int) | not read |
 | `_plan_info.planInfo.planName` | string | card plan label |
-| `_plan_info.planInfo` `{billingCycleEnd, price}` | string | not read |
+| `_plan_info.planInfo.billingCycleEnd` | string, 13-digit epoch milliseconds | fallback reset when primary payload has none |
+| `_plan_info.planInfo.price` | string | not read |
 | `_plan_info.nextUpgrade` `{description, includedAmountCents, includedUsagePeriod, name, price, tier}` | string / number (int) | not read |
 
 Each of the three meters appears only when its percentage is present and
-within 0–100, so a missing or unreadable value never becomes 0%. This response
-had no `includedSpend`/`limit` pair, so the "Included credit budget" meter does
-not appear for it. The plan label reads `_plan_info.planInfo.planName` first and
-keeps the older `_plan_info.planName` keys as fallbacks. The synthetic
-fixture `tests/fixtures/cursor-usage.json` mirrors this structure.
+within 0–100, so a missing or unreadable value never becomes 0%. Flat responses
+without a `planUsage` object also accept top-level `totalPercentUsed`,
+`autoPercentUsed`, and `apiPercentUsed` (never duplicating when `planUsage` is
+an object). Reset resolution checks `billingCycleEnd`, `billingCycleEndMs`,
+`planUsage.billingCycleEnd`, `individualUsage.plan.billingCycleEnd`, and
+`_plan_info.planInfo.billingCycleEnd` (leaving reset unknown when all are
+absent), and also supplies missing resets on legacy `quota_meter` /
+`numRequests` meters. This response had no `includedSpend`/`limit` pair, so the
+"Included credit budget" meter does not appear for it. The plan label reads
+`_plan_info.planInfo.planName` first and keeps the older `_plan_info.planName`
+keys as fallbacks. The synthetic fixture `tests/fixtures/cursor-usage.json`
+mirrors this structure.
 
 ---
 
@@ -312,10 +325,17 @@ types were recorded; no values were captured:
 | `upgradeRecommendation`, `upgradeRecommendations[]` `{cta{label, url{url}}, kind, supportingText}` | object, array | not read |
 
 The exact string format of `nextResetTimestampUtc` was not captured. The parser
-reads it as RFC 3339 and, because the key names UTC, reads a date-time without
-an offset as UTC. `resetTime`, `resetAt` and `resets_at` remain fallbacks and
-still need an offset. The synthetic fixture `tests/fixtures/grok-bot-sand.json`
-mirrors this structure.
+reads `nextResetTimestampUtc` and snake_case `next_reset_timestamp_utc` as RFC
+3339 and, because the keys name UTC, reads a date-time without an offset as UTC.
+`resetTime`, `resetAt` and `resets_at` remain fallbacks and still need an
+offset. The parser also accepts snake_case `usage_percent` on the same 0–100
+scale as `usagePercent`, and unwraps nested JSON-object envelopes
+(`usageStatus`, `sandUsageStatus`, `status`, `config`) while ignoring scalar
+fields such as `"status": "ok"`. When `usesPooledEnterpriseAllowance` or
+`includedLimitZero` (or their snake_case equivalents) is `true` on the root or
+unwrapped object, meters are omitted (without triggering a redundant
+`SandBoxService` fallback). The synthetic fixture
+`tests/fixtures/grok-bot-sand.json` mirrors this structure.
 
 The [Bot FAQ](https://docs.x.ai/grok-bot/faq) distinguishes legacy Cursor billing
 from The X Subscription. A legacy SuperGrok link does not merge the Grok.com and
@@ -338,12 +358,12 @@ The parser accepts the following reset timestamp forms:
 | bare number, `< 1e12` | `1770000000` | epoch seconds |
 | bare number, `>= 1e12` | `1770000000000` | epoch milliseconds |
 | string | `"2026-02-01T00:00:00Z"` | ISO 8601 |
-| string without offset (Bot `nextResetTimestampUtc` only) | `"2026-02-01T00:00:00"`, `"2026-02-01 00:00:00"` | UTC |
+| string without offset (Bot `nextResetTimestampUtc` / `next_reset_timestamp_utc` only) | `"2026-02-01T00:00:00"`, `"2026-02-01 00:00:00"` | UTC |
 | `null` / `""` | | no reset known — render the meter without a reset line |
 
 Same normalisation applies to percentages: accept a number, a numeric string, and
-a `0.0–1.0` fraction as well as `0–100` (except `usagePercent`, which is always
-`0–100`); anything unparseable is a missing meter,
+a `0.0–1.0` fraction as well as `0–100` (except `usagePercent` / `usage_percent`,
+which are always `0–100`); anything unparseable is a missing meter,
 not a zero. **A missing value must never render as 0%** — that would invent a
 known quota value.
 
