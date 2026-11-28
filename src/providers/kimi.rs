@@ -34,6 +34,44 @@ fn credential_path(
     }
 }
 
+fn kimi_refresh_body(credentials: &Credentials) -> Result<RefreshBody> {
+    let refresh = credentials.refresh(D)?;
+    Ok(RefreshBody::Form(vec![
+        (
+            "client_id".into(),
+            "17e5f671-d194-4dfb-9706-5516cb48c098".into(),
+        ),
+        ("grant_type".into(), "refresh_token".into()),
+        ("refresh_token".into(), refresh),
+    ]))
+}
+
+async fn fetch_at(
+    client: &Client,
+    credentials: &mut Credentials,
+    usage_endpoint: &str,
+    refresh_endpoint: &str,
+    no_proxy_refresh: bool,
+) -> Result<Value> {
+    fetch_with_reactive_refresh(
+        credentials,
+        D,
+        refresh_endpoint,
+        false,
+        no_proxy_refresh,
+        kimi_refresh_body,
+        |token| async move {
+            response(
+                client.get(usage_endpoint).bearer_auth(token).send().await,
+                usage_endpoint,
+                D,
+            )
+            .await
+        },
+    )
+    .await
+}
+
 #[async_trait]
 impl Provider for Kimi {
     fn descriptor(&self) -> Descriptor {
@@ -49,28 +87,7 @@ impl Provider for Kimi {
         Credentials::load(path, D, vec![])
     }
     async fn fetch(&self, client: &Client, credentials: &mut Credentials) -> Result<Value> {
-        if credentials.near_expiry() {
-            let refresh = credentials.refresh(D)?;
-            let form = vec![
-                (
-                    "client_id".into(),
-                    "17e5f671-d194-4dfb-9706-5516cb48c098".into(),
-                ),
-                ("grant_type".into(), "refresh_token".into()),
-                ("refresh_token".into(), refresh),
-            ];
-            refresh_safely(credentials, REFRESH, D, RefreshBody::Form(form), false).await?;
-        }
-        response(
-            client
-                .get(ENDPOINT)
-                .bearer_auth(credentials.access(D)?)
-                .send()
-                .await,
-            ENDPOINT,
-            D,
-        )
-        .await
+        fetch_at(client, credentials, ENDPOINT, REFRESH, false).await
     }
     fn parse(&self, payload: &Value) -> Result<Usage> {
         let mut meters = Vec::new();
@@ -315,5 +332,315 @@ mod tests {
         assert_eq!(u.meters[0].used_percent, 25.0);
         assert_eq!(u.meters[1].used_percent, 20.0);
         assert!(Kimi.parse(&json!({"usage":{"limit":100}})).is_err());
+    }
+
+    const KIMI_USAGE_JSON: &str = r#"{"usage":{"limit":100,"remaining":75}}"#;
+    const KIMI_REFRESH_JSON: &str = r#"{"access_token":"synthetic-new-access","refresh_token":"synthetic-new-refresh","expires_in":3600}"#;
+
+    #[tokio::test]
+    async fn reactive_refresh_on_401_rotates_disk_and_retries_once() {
+        use crate::providers::test_http::{MockServer, ScriptedReply, local_client};
+        let client = local_client();
+        let future = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
+
+        for doc in [
+            json!({
+                "access_token": "synthetic-old-access",
+                "refresh_token": "synthetic-old-refresh",
+                "expires_at": future,
+                "other": {"keep": 42}
+            }),
+            json!({
+                "access_token": "synthetic-old-access",
+                "refresh_token": "synthetic-old-refresh",
+                "other": {"keep": 42}
+            }),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("kimi-code.json");
+            fs::write(&path, doc.to_string()).unwrap();
+            let mut credentials = Credentials::load(path.clone(), D, vec![]).unwrap();
+
+            let usage_srv = MockServer::spawn(
+                "/coding/v1/usages",
+                vec![
+                    ScriptedReply::status(401, r#"{"error":"revoked"}"#),
+                    ScriptedReply::ok(KIMI_USAGE_JSON),
+                ],
+            );
+            let refresh_srv = MockServer::spawn(
+                "/api/oauth/token",
+                vec![ScriptedReply::ok(KIMI_REFRESH_JSON)],
+            );
+
+            let payload = fetch_at(
+                &client,
+                &mut credentials,
+                usage_srv.url(),
+                refresh_srv.url(),
+                true,
+            )
+            .await
+            .expect("Kimi reactive refresh on 401 should rotate and succeed");
+
+            let usage_reqs = usage_srv.finish();
+            let refresh_reqs = refresh_srv.finish();
+
+            assert_eq!(usage_reqs.len(), 2);
+            assert!(
+                usage_reqs[0]
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer synthetic-old-access")
+            );
+            assert!(
+                usage_reqs[1]
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer synthetic-new-access")
+            );
+            assert_eq!(refresh_reqs.len(), 1);
+            assert!(refresh_reqs[0].contains("grant_type=refresh_token"));
+            assert!(refresh_reqs[0].contains("refresh_token=synthetic-old-refresh"));
+            assert!(refresh_reqs[0].contains("client_id=17e5f671-d194-4dfb-9706-5516cb48c098"));
+
+            let usage = Kimi.parse(&payload).unwrap();
+            assert_eq!(usage.meters.len(), 1);
+            assert_eq!(usage.meters[0].used_percent, 25.0);
+
+            let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["access_token"], "synthetic-new-access");
+            assert_eq!(saved["refresh_token"], "synthetic-new-refresh");
+            assert_eq!(saved["other"], json!({"keep": 42}));
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn reactive_refresh_no_loops_terminal_reconnect_backoff_and_concurrent_edit() {
+        use crate::providers::test_http::{MockServer, ScriptedReply, local_client};
+        let client = local_client();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+
+        // 1) Retry returns 401 -> no loop, Reconnect, rotated tokens persisted.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kimi-code.json");
+        fs::write(
+            &path,
+            json!({
+                "access_token": "synthetic-old-access",
+                "refresh_token": "synthetic-old-refresh",
+                "expires_at": now + 3600
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut credentials = Credentials::load(path.clone(), D, vec![]).unwrap();
+        let usage_srv = MockServer::spawn(
+            "/coding/v1/usages",
+            vec![
+                ScriptedReply::status(401, "unauthorized"),
+                ScriptedReply::status(401, "still unauthorized"),
+            ],
+        );
+        let refresh_srv = MockServer::spawn(
+            "/api/oauth/token",
+            vec![ScriptedReply::ok(KIMI_REFRESH_JSON)],
+        );
+        let err = fetch_at(
+            &client,
+            &mut credentials,
+            usage_srv.url(),
+            refresh_srv.url(),
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, Status::Reconnect);
+        assert_eq!(usage_srv.finish().len(), 2);
+        assert_eq!(refresh_srv.finish().len(), 1);
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["access_token"], "synthetic-new-access");
+
+        // 2) Proactive refresh already ran + usage 401 -> no 2nd refresh.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kimi-code.json");
+        fs::write(
+            &path,
+            json!({
+                "access_token": "synthetic-old-access",
+                "refresh_token": "synthetic-old-refresh",
+                "expires_at": now + 30
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut credentials = Credentials::load(path, D, vec![]).unwrap();
+        let usage_srv = MockServer::spawn(
+            "/coding/v1/usages",
+            vec![ScriptedReply::status(401, "still unauthorized")],
+        );
+        let refresh_srv = MockServer::spawn(
+            "/api/oauth/token",
+            vec![ScriptedReply::ok(KIMI_REFRESH_JSON)],
+        );
+        let err = fetch_at(
+            &client,
+            &mut credentials,
+            usage_srv.url(),
+            refresh_srv.url(),
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, Status::Reconnect);
+        assert_eq!(usage_srv.finish().len(), 1);
+        assert_eq!(refresh_srv.finish().len(), 1);
+
+        // 3) Missing refresh_token on 401 -> Reconnect with 0 refresh calls.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kimi-code.json");
+        fs::write(
+            &path,
+            json!({"access_token": "synthetic-old-access", "expires_at": now + 3600}).to_string(),
+        )
+        .unwrap();
+        let mut credentials = Credentials::load(path, D, vec![]).unwrap();
+        let usage_srv = MockServer::spawn(
+            "/coding/v1/usages",
+            vec![ScriptedReply::status(401, "unauthorized")],
+        );
+        let refresh_srv = MockServer::spawn("/api/oauth/token", vec![]);
+        let err = fetch_at(
+            &client,
+            &mut credentials,
+            usage_srv.url(),
+            refresh_srv.url(),
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, Status::Reconnect);
+        assert_eq!(usage_srv.finish().len(), 1);
+        assert_eq!(refresh_srv.finish().len(), 0);
+
+        // 4) Refresh returns 400/401/403 -> Reconnect, disk untouched, no secrets.
+        for status in [400u16, 401, 403] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("kimi-code.json");
+            let original = json!({
+                "access_token": "synthetic-old-access",
+                "refresh_token": "synthetic-old-refresh",
+                "expires_at": now + 3600
+            })
+            .to_string();
+            fs::write(&path, &original).unwrap();
+            let mut credentials = Credentials::load(path.clone(), D, vec![]).unwrap();
+            let usage_srv = MockServer::spawn(
+                "/coding/v1/usages",
+                vec![ScriptedReply::status(401, "unauthorized")],
+            );
+            let refresh_srv = MockServer::spawn(
+                "/api/oauth/token",
+                vec![ScriptedReply::status(
+                    status,
+                    r#"{"error":"invalid_grant","secret":"synthetic-leak"}"#,
+                )],
+            );
+            let err = fetch_at(
+                &client,
+                &mut credentials,
+                usage_srv.url(),
+                refresh_srv.url(),
+                true,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(err.status, Status::Reconnect, "status {status}");
+            assert!(!err.message.contains("synthetic-old-refresh"));
+            assert!(!err.message.contains("synthetic-leak"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+            assert_eq!(usage_srv.finish().len(), 1);
+            assert_eq!(refresh_srv.finish().len(), 1);
+        }
+
+        // 5) Usage 429 -> 0 refresh calls, Retry-After preserved; Usage 401 -> Refresh 429 -> Retry-After preserved.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kimi-code.json");
+        fs::write(
+            &path,
+            json!({
+                "access_token": "synthetic-old-access",
+                "refresh_token": "synthetic-old-refresh",
+                "expires_at": now + 3600
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut credentials = Credentials::load(path.clone(), D, vec![]).unwrap();
+        let usage_srv =
+            MockServer::spawn("/coding/v1/usages", vec![ScriptedReply::rate_limit("45")]);
+        let refresh_srv = MockServer::spawn("/api/oauth/token", vec![]);
+        let err = fetch_at(
+            &client,
+            &mut credentials,
+            usage_srv.url(),
+            refresh_srv.url(),
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, Status::Error);
+        assert_eq!(err.retry_after_secs, Some(45));
+        assert_eq!(usage_srv.finish().len(), 1);
+        assert_eq!(refresh_srv.finish().len(), 0);
+
+        let mut credentials = Credentials::load(path.clone(), D, vec![]).unwrap();
+        let usage_srv = MockServer::spawn(
+            "/coding/v1/usages",
+            vec![ScriptedReply::status(401, "unauthorized")],
+        );
+        let refresh_srv =
+            MockServer::spawn("/api/oauth/token", vec![ScriptedReply::rate_limit("60")]);
+        let err = fetch_at(
+            &client,
+            &mut credentials,
+            usage_srv.url(),
+            refresh_srv.url(),
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, Status::Error);
+        assert_eq!(err.retry_after_secs, Some(60));
+        assert_eq!(usage_srv.finish().len(), 1);
+        assert_eq!(refresh_srv.finish().len(), 1);
+
+        // 6) Concurrent CLI edit during reactive refresh preserves CLI file and returns Error.
+        let mut credentials = Credentials::load(path.clone(), D, vec![]).unwrap();
+        let cli_updated = r#"{"access_token":"synthetic-cli-newer","refresh_token":"cli-r"}"#;
+        let path_for_hook = path.clone();
+        let usage_srv = MockServer::spawn(
+            "/coding/v1/usages",
+            vec![ScriptedReply::status(401, "unauthorized")],
+        );
+        let refresh_srv = MockServer::spawn(
+            "/api/oauth/token",
+            vec![ScriptedReply::ok(KIMI_REFRESH_JSON).with_hook(move || {
+                fs::write(&path_for_hook, cli_updated).unwrap();
+            })],
+        );
+        let err = fetch_at(
+            &client,
+            &mut credentials,
+            usage_srv.url(),
+            refresh_srv.url(),
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, Status::Error);
+        assert!(!err.message.contains("synthetic-new-access"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), cli_updated);
+        assert_eq!(usage_srv.finish().len(), 1);
+        assert_eq!(refresh_srv.finish().len(), 1);
     }
 }

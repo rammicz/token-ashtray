@@ -116,12 +116,20 @@ pub fn all() -> Vec<Arc<dyn Provider>> {
 }
 
 pub fn client() -> Result<Client> {
-    Client::builder()
+    build_client(false)
+}
+
+fn build_client(no_proxy: bool) -> Result<Client> {
+    let mut builder = Client::builder()
         .user_agent(concat!("TokenAshtray/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10))
         // Credentials may only be sent to the documented provider origin.
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    if no_proxy {
+        builder = builder.no_proxy();
+    }
+    builder
         .build()
         .map_err(|_| ProviderError::error("Could not initialize TLS client"))
 }
@@ -301,10 +309,29 @@ pub enum RefreshBody {
 
 pub async fn refresh_safely(
     credentials: &mut Credentials,
-    endpoint: &'static str,
+    endpoint: impl Into<String>,
     descriptor: Descriptor,
     body: RefreshBody,
     camel_case: bool,
+) -> Result<()> {
+    refresh_safely_inner(
+        credentials,
+        endpoint.into(),
+        descriptor,
+        body,
+        camel_case,
+        false,
+    )
+    .await
+}
+
+async fn refresh_safely_inner(
+    credentials: &mut Credentials,
+    endpoint: String,
+    descriptor: Descriptor,
+    body: RefreshBody,
+    camel_case: bool,
+    no_proxy: bool,
 ) -> Result<()> {
     credentials::finish_refresh(credentials, move |mut owned| {
         // Own the I/O driver too: shutting down the polling runtime must not
@@ -314,18 +341,72 @@ pub async fn refresh_safely(
             .build()
             .map_err(|_| ProviderError::error("Could not start OAuth refresh worker"))?;
         runtime.block_on(async {
-            let client = client()?;
-            let request = client.post(endpoint);
+            let client = build_client(no_proxy)?;
+            let request = client.post(&endpoint);
             let request = match body {
                 RefreshBody::Json(body) => request.json(&body),
                 RefreshBody::Form(body) => request.form(&body),
             };
-            let payload = oauth_response(request.send().await, endpoint, descriptor).await?;
+            let payload = oauth_response(request.send().await, &endpoint, descriptor).await?;
             owned.apply_refresh(&payload, camel_case)?;
             Ok(owned)
         })
     })
     .await
+}
+
+pub async fn fetch_with_reactive_refresh<F, Fut>(
+    credentials: &mut Credentials,
+    descriptor: Descriptor,
+    refresh_endpoint: &str,
+    camel_case: bool,
+    no_proxy_refresh: bool,
+    build_refresh: impl Fn(&Credentials) -> Result<RefreshBody>,
+    mut fetch_once: F,
+) -> Result<Value>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value>>,
+{
+    let mut refreshed = false;
+    if credentials.near_expiry() {
+        let body = build_refresh(credentials)?;
+        refresh_safely_inner(
+            credentials,
+            refresh_endpoint.to_owned(),
+            descriptor,
+            body,
+            camel_case,
+            no_proxy_refresh,
+        )
+        .await?;
+        refreshed = true;
+    }
+    // Validate access_token before issuing usage requests so any Status::Reconnect
+    // returned by `fetch_once` strictly represents an HTTP 401 from the server.
+    let token = credentials.access(descriptor)?.to_owned();
+    match fetch_once(token).await {
+        Ok(value) => Ok(value),
+        Err(error)
+            if error.status == Status::Reconnect
+                && !refreshed
+                && credentials.refresh(descriptor).is_ok() =>
+        {
+            let body = build_refresh(credentials)?;
+            refresh_safely_inner(
+                credentials,
+                refresh_endpoint.to_owned(),
+                descriptor,
+                body,
+                camel_case,
+                no_proxy_refresh,
+            )
+            .await?;
+            let rotated = credentials.access(descriptor)?.to_owned();
+            fetch_once(rotated).await
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn retry_after_seconds(value: &str) -> Option<u64> {
@@ -339,6 +420,200 @@ fn retry_after_seconds(value: &str) -> Option<u64> {
                 .max(0) as u64,
         )
     })
+}
+
+#[cfg(test)]
+pub(crate) mod test_http {
+    use super::*;
+    use std::{
+        collections::VecDeque,
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::Instant,
+    };
+
+    pub struct ScriptedReply {
+        pub status: u16,
+        pub body: String,
+        pub retry_after: Option<String>,
+        pub on_request: Option<Box<dyn FnOnce() + Send>>,
+    }
+
+    impl ScriptedReply {
+        pub fn ok(body: impl Into<String>) -> Self {
+            Self {
+                status: 200,
+                body: body.into(),
+                retry_after: None,
+                on_request: None,
+            }
+        }
+
+        pub fn status(status: u16, body: impl Into<String>) -> Self {
+            Self {
+                status,
+                body: body.into(),
+                retry_after: None,
+                on_request: None,
+            }
+        }
+
+        pub fn rate_limit(retry_after: impl Into<String>) -> Self {
+            Self {
+                status: 429,
+                body: r#"{"error":"rate limited"}"#.into(),
+                retry_after: Some(retry_after.into()),
+                on_request: None,
+            }
+        }
+
+        pub fn with_hook(mut self, hook: impl FnOnce() + Send + 'static) -> Self {
+            self.on_request = Some(Box::new(hook));
+            self
+        }
+    }
+
+    pub struct MockServer {
+        url: String,
+        stop: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<Vec<String>>>,
+    }
+
+    impl MockServer {
+        pub fn spawn(path: &str, replies: Vec<ScriptedReply>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}{path}", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_flag = Arc::clone(&stop);
+            let mut queue = VecDeque::from(replies);
+            let handle = thread::spawn(move || {
+                let mut requests = Vec::new();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !stop_flag.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            // Winsock inherits the listener's nonblocking mode.
+                            socket.set_nonblocking(false).unwrap();
+                            socket
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .unwrap();
+                            let request = read_http_request(&mut socket);
+                            requests.push(request);
+                            let reply = queue.pop_front().unwrap_or_else(|| {
+                                ScriptedReply::status(500, r#"{"error":"unexpected request"}"#)
+                            });
+                            if let Some(hook) = reply.on_request {
+                                hook();
+                            }
+                            let retry_header = reply
+                                .retry_after
+                                .as_deref()
+                                .map(|secs| format!("Retry-After: {secs}\r\n"))
+                                .unwrap_or_default();
+                            let _ = write!(
+                                socket,
+                                "HTTP/1.1 {} Synthetic\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{retry_header}Connection: close\r\n\r\n{}",
+                                reply.status,
+                                reply.body.len(),
+                                reply.body
+                            );
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("local mock server accept failed: {error}"),
+                    }
+                }
+                requests
+            });
+            Self {
+                url,
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        pub fn url(&self) -> &str {
+            &self.url
+        }
+
+        pub fn finish(mut self) -> Vec<String> {
+            self.stop.store(true, Ordering::Release);
+            self.handle.take().unwrap().join().unwrap()
+        }
+    }
+
+    impl Drop for MockServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn read_http_request(socket: &mut std::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut header_end = None;
+        let mut content_length = 0usize;
+        loop {
+            match socket.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if header_end.is_none()
+                        && let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+                    {
+                        let end = pos + 4;
+                        header_end = Some(end);
+                        let headers = String::from_utf8_lossy(&buf[..end]);
+                        content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                    }
+                    if let Some(end) = header_end
+                        && buf.len() >= end + content_length
+                    {
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => panic!("local mock server read failed: {error}"),
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    pub fn local_client() -> Client {
+        Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    }
 }
 
 #[cfg(test)]
