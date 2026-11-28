@@ -3,9 +3,9 @@
 Verified Windows packages are published on
 [GitHub Releases](https://github.com/rammicz/token-ashtray/releases) with a
 `SHA256SUMS` file. Releases publish the portable Windows x64 ZIP and, when
-built and published for a release, the graphical setup
-(`Token-Ashtray-Setup.exe`). Pick the matching asset on the release page and
-check its bundled `LICENSE` and notices; current source is MIT-licensed.
+included, the graphical setup (`Token-Ashtray-Setup.exe`). Pick the matching
+asset on the release page and check its bundled `LICENSE` and notices; current
+source is MIT-licensed.
 
 ## Graphical setup (Windows 11 x64)
 
@@ -145,10 +145,10 @@ existing environment credentials before editor/CLI files and a read-only GitHub
 CLI (`gh`) `hosts.yml` fallback. A tray-launched app inherits the environment of
 its launcher, which may differ from a terminal. Antigravity requires CLI 1.1.11+
 and a completed `agy` sign-in; the CLI owns its Windows Credential Manager login.
-Mistral Vibe uses `MISTRAL_API_KEY` (environment or `~/.vibe/.env`) or the
-installed `vibe` / `vibe-app-server` CLI with its existing sign-in (`vibe --setup`),
-where the CLI owns its OS credential store; native Windows validation of
-`vibe-app-server.exe` remains deferred to a Windows machine. Never copy
+Mistral Vibe uses `MISTRAL_API_KEY` (environment or `%USERPROFILE%\.vibe\.env`)
+or the installed `vibe` / `vibe-app-server` CLI with its existing sign-in
+(`vibe --setup`), where the CLI owns its OS credential store; native Windows
+validation of `vibe-app-server.exe` remains deferred to a Windows machine. Never copy
 credentials into Token Ashtray or a bug report. A failing provider does not stop
 the others; check its message, network access and login, and allow rate-limit
 backoff to finish.

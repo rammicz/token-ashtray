@@ -2,11 +2,10 @@
 
 Verified Linux packages are published on
 [GitHub Releases](https://github.com/rammicz/token-ashtray/releases) with a
-`SHA256SUMS` file. Releases publish the portable Linux ZIP and, when built and
-published for a release, the standalone graphical setup
-(`token-ashtray-setup-linux-x86_64`). Pick the matching asset on the release
-page and check its bundled `LICENSE` and notices; current source is
-MIT-licensed.
+`SHA256SUMS` file. Releases publish the portable Linux ZIP and, when included,
+the standalone graphical setup (`token-ashtray-setup-linux-x86_64`). Pick the
+matching asset on the release page and check its bundled `LICENSE` and notices;
+current source is MIT-licensed.
 
 When included in a release, the graphical download is one
 `token-ashtray-setup-linux-x86_64` file. It supports Ubuntu 22.04 x86_64 and
@@ -150,10 +149,10 @@ or **Open board** raises or restores a board that is already open.
 ## Provider sign-in and updates
 
 Setup does not sign into providers. Open the relevant CLI or editor and follow
-the provider-specific reconnect message: Cursor/Grok Bot use Cursor desktop,
+the provider-specific reconnect message: Cursor/Grok Bot use Cursor desktop;
 Copilot uses existing environment credentials, editor/CLI login files, or a
-read-only GitHub CLI (`gh`) `hosts.yml` fallback, Antigravity uses its
-signed-in CLI, and Mistral Vibe uses `MISTRAL_API_KEY` (environment or
+read-only GitHub CLI (`gh`) `hosts.yml` fallback; Antigravity uses its
+signed-in CLI; and Mistral Vibe uses `MISTRAL_API_KEY` (environment or
 `~/.vibe/.env`) or the installed `vibe` / `vibe-app-server` CLI with its
 existing sign-in (`vibe --setup`). Do not paste credentials into a bug report.
 A failing provider does not stop the others. Check its message, network access
