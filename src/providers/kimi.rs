@@ -92,11 +92,14 @@ impl Provider for Kimi {
         fetch_at(client, credentials, ENDPOINT, REFRESH, false).await
     }
     fn parse(&self, payload: &Value) -> Result<Usage> {
-        const LIST_KEYS: [&str; 4] = ["limits", "usages", "quotas", "windows"];
+        const ROOT_LIST_KEYS: [&str; 5] = ["limits", "usages", "quotas", "windows", "data"];
         let has_top_level = payload.get("usage").is_some_and(Value::is_object)
-            || LIST_KEYS
-                .iter()
-                .any(|key| payload.get(key).is_some_and(Value::is_array));
+            || ROOT_LIST_KEYS[..4].iter().any(|key| {
+                payload
+                    .get(key)
+                    .and_then(Value::as_array)
+                    .is_some_and(|array| !array.is_empty())
+            });
         let root = if !has_top_level
             && let Some(data) = payload.get("data").filter(|value| value.is_object())
         {
@@ -109,14 +112,11 @@ impl Provider for Kimi {
         if let Some(meter) = kimi_meter("Total", &root["usage"]) {
             meters.push(meter);
         }
-        if let Some(items) = ["limits", "usages", "quotas", "windows", "data"]
-            .iter()
-            .find_map(|key| {
-                root.get(key)
-                    .and_then(Value::as_array)
-                    .filter(|array| !array.is_empty())
-            })
-        {
+        if let Some(items) = ROOT_LIST_KEYS.iter().find_map(|key| {
+            root.get(key)
+                .and_then(Value::as_array)
+                .filter(|array| !array.is_empty())
+        }) {
             for (i, item) in items.iter().enumerate() {
                 let label = kimi_window_label(item, i);
                 let detail = item

@@ -118,24 +118,7 @@ impl Provider for Copilot {
             if entitlement.is_some_and(|e| e <= 0.0) {
                 continue;
             }
-            let used_percent = match quota.get("percent_remaining") {
-                Some(value) if !value.is_null() => percent100(value).map(|r| 100.0 - r),
-                _ => {
-                    let remaining = quota
-                        .get("remaining")
-                        .filter(|v| !v.is_null())
-                        .or_else(|| quota.get("quota_remaining"))
-                        .and_then(number);
-                    match (entitlement, remaining) {
-                        (Some(entitlement), Some(remaining)) if entitlement > 0.0 => Some(
-                            ((entitlement - remaining) / entitlement * 100.0).clamp(0.0, 100.0)
-                                as f32,
-                        ),
-                        _ => None,
-                    }
-                }
-            };
-            if let Some(used_percent) = used_percent {
+            if let Some(used_percent) = copilot_used_percent(quota, entitlement) {
                 meters.push(Meter {
                     label: label.into(),
                     used_percent,
@@ -158,6 +141,20 @@ impl Provider for Copilot {
             plan,
             ..Default::default()
         })
+    }
+}
+fn copilot_used_percent(quota: &Value, entitlement: Option<f64>) -> Option<f32> {
+    match quota.get("percent_remaining") {
+        Some(value) if !value.is_null() => percent100(value).map(|r| 100.0 - r),
+        _ => {
+            let remaining = quota
+                .get("remaining")
+                .filter(|v| !v.is_null())
+                .or_else(|| quota.get("quota_remaining"))
+                .and_then(number)?;
+            let entitlement = entitlement.filter(|&e| e > 0.0)?;
+            Some(((entitlement - remaining) / entitlement * 100.0).clamp(0.0, 100.0) as f32)
+        }
     }
 }
 fn candidate_directories() -> Vec<PathBuf> {
@@ -222,6 +219,13 @@ pub(super) fn gh_hosts_candidates_from(
     paths
 }
 
+struct UsersBlock {
+    indent: usize,
+    entry_indent: Option<usize>,
+    current_user: Option<String>,
+    prop_indent: Option<usize>,
+}
+
 /// Minimal zero-dependency extractor for GitHub CLI `hosts.yml`.
 /// Scoped strictly to the indent-0 `github.com:` host block so enterprise
 /// tokens are never extracted; supports both flat `oauth_token:` and `gh` 2.40+
@@ -232,10 +236,7 @@ fn parse_gh_hosts_yml(content: &str) -> Option<String> {
     let mut host_child_indent: Option<usize> = None;
     let mut direct_token: Option<String> = None;
     let mut active_user: Option<String> = None;
-    let mut users_indent: Option<usize> = None;
-    let mut user_entry_indent: Option<usize> = None;
-    let mut current_user: Option<String> = None;
-    let mut user_prop_indent: Option<usize> = None;
+    let mut users_block: Option<UsersBlock> = None;
     let mut user_tokens: Vec<(String, String)> = Vec::new();
 
     for raw_line in content.lines() {
@@ -250,10 +251,7 @@ fn parse_gh_hosts_yml(content: &str) -> Option<String> {
             .count();
         if indent == 0 {
             host_child_indent = None;
-            users_indent = None;
-            user_entry_indent = None;
-            current_user = None;
-            user_prop_indent = None;
+            users_block = None;
             if trimmed == "---" || trimmed == "..." {
                 in_github_com = false;
                 continue;
@@ -266,47 +264,42 @@ fn parse_gh_hosts_yml(content: &str) -> Option<String> {
         }
         let host_indent = *host_child_indent.get_or_insert(indent);
         if indent < host_indent {
-            users_indent = None;
-            user_entry_indent = None;
-            current_user = None;
-            user_prop_indent = None;
+            users_block = None;
             continue;
         }
         if indent == host_indent {
-            users_indent = None;
-            user_entry_indent = None;
-            current_user = None;
-            user_prop_indent = None;
+            users_block = None;
             let Some((key, value)) = split_yaml_mapping(trimmed) else {
                 continue;
             };
             match key.as_str() {
-                "oauth_token" => {
-                    if direct_token.is_none() {
-                        direct_token = parse_yaml_scalar(value);
-                    }
+                "oauth_token" if direct_token.is_none() => {
+                    direct_token = parse_yaml_scalar(value);
                 }
-                "user" => {
-                    if active_user.is_none() {
-                        active_user = parse_yaml_scalar(value);
-                    }
+                "user" if active_user.is_none() => {
+                    active_user = parse_yaml_scalar(value);
                 }
                 "users" => {
-                    users_indent = Some(indent);
+                    users_block = Some(UsersBlock {
+                        indent,
+                        entry_indent: None,
+                        current_user: None,
+                        prop_indent: None,
+                    });
                 }
                 _ => {}
             }
-        } else if let Some(u_indent) = users_indent
-            && indent > u_indent
+        } else if let Some(users) = users_block.as_mut()
+            && indent > users.indent
         {
-            let entry_indent = *user_entry_indent.get_or_insert(indent);
+            let entry_indent = *users.entry_indent.get_or_insert(indent);
             if indent == entry_indent {
-                current_user = split_yaml_mapping(trimmed).map(|(key, _)| key);
-                user_prop_indent = None;
+                users.current_user = split_yaml_mapping(trimmed).map(|(key, _)| key);
+                users.prop_indent = None;
             } else if indent > entry_indent
-                && let Some(user) = current_user.as_deref()
+                && let Some(user) = users.current_user.as_deref()
             {
-                let prop_indent = *user_prop_indent.get_or_insert(indent);
+                let prop_indent = *users.prop_indent.get_or_insert(indent);
                 if indent == prop_indent
                     && let Some((key, value)) = split_yaml_mapping(trimmed)
                     && key == "oauth_token"
