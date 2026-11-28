@@ -1,4 +1,5 @@
 """Public export: omitted internal records, exact bytes and a redacting privacy scan."""
+from contextlib import contextmanager
 import getpass
 import hashlib
 import os
@@ -18,6 +19,8 @@ import public_export  # noqa: E402
 
 # Samples are assembled from fragments so this file itself scans clean.
 HOST = "examplehost"
+NOREPLY = "12345+fixture" + "@" + "users.noreply.github.com"
+LEGACY_NOREPLY = "fixture-user" + "@" + "users.noreply.github.com"
 SAMPLES = {
     "credential": "token = " + "ghp" + "_" + "a1" * 18,
     "personal-email": "write to jan.novak" + "@" + "gmail.com",
@@ -199,12 +202,9 @@ class CommandLine(unittest.TestCase):
             self.assertEqual(result.returncode, 2, extra)
 
     def test_check_git_cli_fails_with_redacted_counts_only(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory, "source")
-            source.mkdir()
+        with GitAttribution.temp_repo() as source:
             author = "personal.user" + "@" + "example.invalid"
             tagger = "tagger.secret" + "@" + "private.invalid"
-            GitAttribution.init_repo(source)
             GitAttribution.commit(source, "README.md", "# Demo\n", author, author)
             GitAttribution.annotated_tag(source, "v0.0.1", "release tag", tagger)
             result = subprocess.run(
@@ -221,15 +221,10 @@ class CommandLine(unittest.TestCase):
                 self.assertNotIn(leaked, combined)
 
     def test_check_git_cli_passes_on_clean_repo(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory, "source")
-            source.mkdir()
-            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
-            legacy = "fixture-user" + "@" + "users.noreply.github.com"
-            GitAttribution.init_repo(source)
-            GitAttribution.commit(source, "README.md", "# Clean\n", noreply, noreply)
+        with GitAttribution.temp_repo() as source:
+            GitAttribution.commit(source, "README.md", "# Clean\n", NOREPLY, NOREPLY)
             subprocess.run(["git", "tag", "v0.1.0"], cwd=source, check=True)
-            GitAttribution.annotated_tag(source, "v0.2.0", "clean annotated tag", legacy)
+            GitAttribution.annotated_tag(source, "v0.2.0", "clean annotated tag", LEGACY_NOREPLY)
             result = subprocess.run(
                 [sys.executable, str(SCRIPT), "--repo", str(source),
                  "--check-git", "HEAD", "refs/tags/v0.1.0", "refs/tags/v0.2.0"],
@@ -249,8 +244,13 @@ class CommandLine(unittest.TestCase):
 
 class GitAttribution(unittest.TestCase):
     @staticmethod
-    def init_repo(root):
-        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    @contextmanager
+    def temp_repo():
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            source.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+            yield source
 
     @staticmethod
     def commit(root, name, content, author_email, committer_email):
@@ -259,29 +259,30 @@ class GitAttribution(unittest.TestCase):
         path.write_text(content)
         subprocess.run(["git", "add", name], cwd=root, check=True)
         env = {
-            "PATH": os.environ.get("PATH", ""),
+            **os.environ,
             "GIT_AUTHOR_NAME": "Fixture Author",
             "GIT_AUTHOR_EMAIL": author_email,
             "GIT_COMMITTER_NAME": "Fixture Committer",
             "GIT_COMMITTER_EMAIL": committer_email,
         }
-        subprocess.run(["git", "commit", "-q", "-m", f"add {name}"], cwd=root, env=env, check=True)
+        subprocess.run(["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", f"add {name}"],
+                       cwd=root, env=env, check=True)
 
     @staticmethod
     def annotated_tag(root, tag_name, message, tagger_email, target="HEAD"):
         env = {
-            "PATH": os.environ.get("PATH", ""),
+            **os.environ,
             "GIT_COMMITTER_NAME": "Fixture Tagger",
             "GIT_COMMITTER_EMAIL": tagger_email,
         }
-        subprocess.run(["git", "-c", "advice.nestedTag=false", "tag", "-a", tag_name, target, "-m", message],
-                       cwd=root, env=env, check=True)
+        subprocess.run(
+            ["git", "-c", "advice.nestedTag=false", "-c", "tag.gpgSign=false",
+             "tag", "-a", tag_name, target, "-m", message],
+            cwd=root, env=env, check=True,
+        )
 
     def test_non_approved_commit_and_tag_emails_are_counted_once(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory, "source")
-            source.mkdir()
-            self.init_repo(source)
+        with self.temp_repo() as source:
             author = "personal.user" + "@" + "example.invalid"
             committer = "corp.builder" + "@" + "example.org"
             tagger = "tagger.person" + "@" + "example.net"
@@ -295,15 +296,10 @@ class GitAttribution(unittest.TestCase):
             })
 
     def test_mixed_commits_count_only_non_approved_identities(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory, "source")
-            source.mkdir()
-            self.init_repo(source)
-            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
-            legacy = "fixture-user" + "@" + "users.noreply.github.com"
+        with self.temp_repo() as source:
             bot = "41898282+github-actions[bot]" + "@" + "users.noreply.github.com"
-            self.commit(source, "a.txt", "1\n", noreply, "builder" + "@" + "example.invalid")
-            self.commit(source, "b.txt", "2\n", "author" + "@" + "example.invalid", legacy)
+            self.commit(source, "a.txt", "1\n", NOREPLY, "builder" + "@" + "example.invalid")
+            self.commit(source, "b.txt", "2\n", "author" + "@" + "example.invalid", LEGACY_NOREPLY)
             self.commit(source, "c.txt", "3\n", bot, bot)
             findings = public_export.check_git_refs(["HEAD"], repository=source)
             self.assertEqual(findings, {
@@ -312,50 +308,37 @@ class GitAttribution(unittest.TestCase):
             })
 
     def test_clean_noreply_commits_lightweight_and_annotated_tags_pass(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory, "source")
-            source.mkdir()
-            self.init_repo(source)
-            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
-            legacy = "fixture-user" + "@" + "users.noreply.github.com"
-            self.commit(source, "a.txt", "hello\n", noreply, noreply)
+        with self.temp_repo() as source:
+            self.commit(source, "a.txt", "hello\n", NOREPLY, NOREPLY)
             subprocess.run(["git", "tag", "v0.1.0"], cwd=source, check=True)
             decoy = "release\n\ntagger Fake <bad" + "@" + "example.invalid> 1700000000 +0000"
-            self.annotated_tag(source, "v0.2.0", decoy, legacy)
+            self.annotated_tag(source, "v0.2.0", decoy, LEGACY_NOREPLY)
             findings = public_export.check_git_refs(
                 ["HEAD", "refs/tags/v0.1.0", "refs/tags/v0.2.0"], repository=source
             )
             self.assertEqual(findings, {})
 
     def test_nested_annotated_tag_checks_every_tag_object(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory, "source")
-            source.mkdir()
-            self.init_repo(source)
-            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
+        with self.temp_repo() as source:
             bad = "nested.tagger" + "@" + "example.invalid"
-            self.commit(source, "a.txt", "hello\n", noreply, noreply)
+            self.commit(source, "a.txt", "hello\n", NOREPLY, NOREPLY)
             self.annotated_tag(source, "v0.1.0", "inner", bad)
-            self.annotated_tag(source, "v0.1.0-wrap", "outer", noreply, target="refs/tags/v0.1.0")
+            self.annotated_tag(source, "v0.1.0-wrap", "outer", NOREPLY, target="refs/tags/v0.1.0")
             findings = public_export.check_git_refs(["refs/tags/v0.1.0-wrap"], repository=source)
             self.assertEqual(findings, {"tagger-email": 1})
 
     def test_invalid_empty_and_non_commit_refs_raise_export_error(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory, "source")
-            source.mkdir()
-            self.init_repo(source)
-            noreply = "12345+fixture" + "@" + "users.noreply.github.com"
-            self.commit(source, "a.txt", "hello\n", noreply, noreply)
+        with self.temp_repo() as source:
+            self.commit(source, "a.txt", "hello\n", NOREPLY, NOREPLY)
             for bad_refs in ([], ["refs/heads/nonexistent"], ["HEAD^{tree}"]):
                 with self.assertRaises(public_export.ExportError, msg=bad_refs):
                     public_export.check_git_refs(bad_refs, repository=source)
 
     def test_approved_git_email_validation(self):
         approved = [
-            "12345+fixture" + "@" + "users.noreply.github.com",
+            NOREPLY,
             "99999+Example-User" + "@" + "USERS.NOREPLY.GITHUB.COM",
-            "fixture-user" + "@" + "users.noreply.github.com",
+            LEGACY_NOREPLY,
             "a" + "@" + "users.noreply.github.com",
             "41898282+github-actions[bot]" + "@" + "users.noreply.github.com",
         ]
