@@ -1,18 +1,22 @@
 # Install Token Ashtray on Windows
 
-Token Ashtray packages are published on
-[GitHub Releases](https://github.com/rammicz/token-ashtray/releases). No
-release has been published yet, so no package is available until the first
-publication. From a published release, select the asset for your platform.
-Check its bundled `LICENSE` and notices; current source is MIT-licensed.
+Verified Windows packages are published on
+[GitHub Releases](https://github.com/rammicz/token-ashtray/releases) with a
+`SHA256SUMS` file. Releases publish the portable Windows x64 ZIP and, when
+built and published for a release, the graphical setup
+(`Token-Ashtray-Setup.exe`). Pick the matching asset on the release page and
+check its bundled `LICENSE` and notices; current source is MIT-licensed.
 
 ## Graphical setup (Windows 11 x64)
 
-Download the Windows setup and the SHA-256 checksum published with it from
-the release. Compare the file's SHA-256 with that checksum, then
-double-click it in File Explorer. Follow the setup wizard. It installs only
-for the current user, without administrator access, Rust, manual extraction,
-or a PowerShell command. Open **Token Ashtray** from Start.
+When included in a release, download the Windows setup and the SHA-256 checksum
+published with it from the release. Compare the file's SHA-256 with that
+checksum, then double-click it in File Explorer. Follow the setup wizard. It
+installs only for the current user, without administrator access, Rust, manual
+extraction, or a PowerShell command. Open **Token Ashtray** from Start. If the
+release provides only the portable ZIP, follow
+[Portable ZIP and legacy PowerShell helper](#portable-zip-and-legacy-powershell-helper)
+below.
 
 The default location is `%LOCALAPPDATA%\Programs\Token Ashtray`. You can
 choose another user-writable location, including a path containing spaces.
@@ -137,12 +141,17 @@ opens the board with an explanation.
 
 Setup does not sign into providers. Follow the provider's reconnect message in
 its own CLI or editor. Cursor/Grok Bot use Cursor desktop sign-in; Copilot checks
-existing environment credentials before editor/CLI files. A tray-launched app
-inherits the environment of its launcher, which may differ from a terminal.
-Antigravity requires CLI 1.1.11+ and a completed `agy` sign-in; the CLI owns its
-Windows Credential Manager login. Never copy credentials into Token Ashtray or
-a bug report. A failing provider does not stop the others; check its message,
-network access and login, and allow rate-limit backoff to finish.
+existing environment credentials before editor/CLI files and a read-only GitHub
+CLI (`gh`) `hosts.yml` fallback. A tray-launched app inherits the environment of
+its launcher, which may differ from a terminal. Antigravity requires CLI 1.1.11+
+and a completed `agy` sign-in; the CLI owns its Windows Credential Manager login.
+Mistral Vibe uses `MISTRAL_API_KEY` (environment or `~/.vibe/.env`) or the
+installed `vibe` / `vibe-app-server` CLI with its existing sign-in (`vibe --setup`),
+where the CLI owns its OS credential store; native Windows validation of
+`vibe-app-server.exe` remains deferred to a Windows machine. Never copy
+credentials into Token Ashtray or a bug report. A failing provider does not stop
+the others; check its message, network access and login, and allow rate-limit
+backoff to finish.
 
 Automatic updates are off by default. **Check for updates automatically**
 under **Updates** in the board's **Window settings** lets the app check GitHub

@@ -41,9 +41,11 @@ provider logins, with different sources for different services:
   provider's reconnect instruction if a login is missing or expired.
 - **Cursor and Grok Bot:** Cursor desktop sign-in, read from its local SQLite
   storage without writing to the database. Grok Bot shares the Cursor account.
-- **GitHub Copilot:** existing CLI/editor login files, or an already configured
-  `GITHUB_COPILOT_API_TOKEN` / `GITHUB_TOKEN` environment value. No token is
-  requested by the app's UI.
+- **GitHub Copilot:** an already configured `GITHUB_COPILOT_GITHUB_TOKEN`,
+  `COPILOT_GITHUB_TOKEN`, `GITHUB_COPILOT_API_TOKEN`, or `GITHUB_TOKEN`
+  environment value (in that order), existing CLI/editor `apps.json` /
+  `hosts.json` login files, or a read-only GitHub CLI (`gh`) `hosts.yml`
+  fallback (never reading OS keyrings). No token is requested by the app's UI.
 - **Antigravity:** Antigravity CLI 1.1.11+ with a completed sign-in. The app invokes
   its read-only quota command; the CLI owns authentication and Token Ashtray
   does not read its OS credential store.
@@ -96,7 +98,7 @@ sections also cancels. Pinning, compact mode,
 provider visibility and polling settings live in the toolbar's **•••** menu.
 Hidden providers are not scheduled.
 The lightweight tray process owns polling. The native board runs in a transient
-child of the same executable and receive normalized data through private pipes;
+child of the same executable and receives normalized data through private pipes;
 closing the board releases its graphics memory. No credentials pass
 to that child.
 

@@ -78,8 +78,9 @@ and provider profiles are never part of the Inno file log or uninstall list.
 Unrelated files are retained; no recursive wildcard removal is used.
 
 The application and setup code are MIT-licensed under the repository's
-[LICENSE](../../LICENSE). Packages are published on GitHub Releases; until
-the first publication no package is available.
+[LICENSE](../../LICENSE). Packages are published on GitHub Releases with a
+`SHA256SUMS` file; `Token-Ashtray-Setup.exe` is included when built and
+published for a release.
 The installer engine retains its own license and upstream notices and origin.
 Its complete unmodified license is in [INNO-LICENSE.txt](INNO-LICENSE.txt) and
 is installed alongside the application notices.

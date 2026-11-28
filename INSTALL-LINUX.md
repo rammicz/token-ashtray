@@ -1,15 +1,20 @@
 # Install Token Ashtray on Linux
 
-Token Ashtray packages are published on
-[GitHub Releases](https://github.com/rammicz/token-ashtray/releases). No
-release has been published yet, so no package is available until the first
-publication. From a published release, select the asset for your platform.
-Check its bundled `LICENSE` and notices; current source is MIT-licensed.
+Verified Linux packages are published on
+[GitHub Releases](https://github.com/rammicz/token-ashtray/releases) with a
+`SHA256SUMS` file. Releases publish the portable Linux ZIP and, when built and
+published for a release, the standalone graphical setup
+(`token-ashtray-setup-linux-x86_64`). Pick the matching asset on the release
+page and check its bundled `LICENSE` and notices; current source is
+MIT-licensed.
 
-The graphical download is one `token-ashtray-setup-linux-x86_64` file. It
-supports Ubuntu 22.04 x86_64 and newer compatible Linux desktops (glibc 2.35+,
-OpenGL, X11 or Wayland and standard desktop libraries). No sudo, Rust,
-Python, FUSE, extraction or terminal commands are needed for normal setup.
+When included in a release, the graphical download is one
+`token-ashtray-setup-linux-x86_64` file. It supports Ubuntu 22.04 x86_64 and
+newer compatible Linux desktops (glibc 2.35+, OpenGL, X11 or Wayland and
+standard desktop libraries). No sudo, Rust, Python, FUSE, extraction or
+terminal commands are needed for normal setup. If the release provides only
+the portable ZIP, follow
+[Portable ZIP and custom locations](#portable-zip-and-custom-locations) below.
 
 1. Save the Linux graphical setup file from the release into Downloads.
 2. In Files (Nautilus), right-click it, choose **Properties → Permissions**,
@@ -99,8 +104,8 @@ Removal deletes the app-owned menu launcher, its Start at login entry, and
 the installed executable, while keeping your settings. To remove Token
 Ashtray's settings too, add `--remove-settings`. This deletes only the
 `config.toml` path shown above. It never deletes Claude, Codex, Cursor, Grok,
-Copilot, Kimi, Antigravity, or other provider CLI credentials. Repeat removal
-is safe.
+Copilot, Kimi, Antigravity, Mistral Vibe, or other provider CLI credentials.
+Repeat removal is safe.
 
 ## Desktop requirements and tray troubleshooting
 
@@ -146,8 +151,11 @@ or **Open board** raises or restores a board that is already open.
 
 Setup does not sign into providers. Open the relevant CLI or editor and follow
 the provider-specific reconnect message: Cursor/Grok Bot use Cursor desktop,
-Copilot can use editor/CLI login or existing environment credentials, and
-Antigravity uses its signed-in CLI. Do not paste credentials into a bug report.
+Copilot uses existing environment credentials, editor/CLI login files, or a
+read-only GitHub CLI (`gh`) `hosts.yml` fallback, Antigravity uses its
+signed-in CLI, and Mistral Vibe uses `MISTRAL_API_KEY` (environment or
+`~/.vibe/.env`) or the installed `vibe` / `vibe-app-server` CLI with its
+existing sign-in (`vibe --setup`). Do not paste credentials into a bug report.
 A failing provider does not stop the others. Check its message, network access
 and login; rate-limited requests wait before retrying. Unknown limits remain
 unknown rather than becoming zero.
