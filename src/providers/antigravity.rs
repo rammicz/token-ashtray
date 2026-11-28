@@ -19,7 +19,22 @@ const D: Descriptor = Descriptor {
     link: "https://antigravity.google/docs/cli/commands/usage",
     login: "Run `agy` and complete its login.",
 };
-const MIN_VERSION: (u64, u64, u64) = (1, 1, 11);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct CliVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    // Ordered after major.minor.patch so prereleases (`false`) sort below the
+    // matching stable release (`true`), e.g. `1.1.11-rc.1 < 1.1.11`.
+    stable: bool,
+}
+
+const MIN_VERSION: CliVersion = CliVersion {
+    major: 1,
+    minor: 1,
+    patch: 11,
+    stable: true,
+};
 const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const USAGE_TIMEOUT: Duration = Duration::from_secs(18);
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024;
@@ -173,7 +188,7 @@ fn discover_binary() -> Option<PathBuf> {
     })
 }
 
-async fn version(binary: &Path) -> Result<(u64, u64, u64)> {
+async fn version(binary: &Path) -> Result<CliVersion> {
     let output = run(binary, UsageCommand::Version).await?;
     if !output.success {
         return Err(D.reconnect("Could not determine Antigravity CLI version"));
@@ -343,13 +358,100 @@ impl CommandOutput {
     }
 }
 
-fn parse_version(bytes: &[u8]) -> Option<(u64, u64, u64)> {
-    let version = std::str::from_utf8(bytes).ok()?.trim();
-    let mut components = version.strip_prefix('v').unwrap_or(version).split('.');
-    let major = components.next()?.parse().ok()?;
-    let minor = components.next()?.parse().ok()?;
-    let patch = components.next()?.parse().ok()?;
-    (components.next().is_none()).then_some((major, minor, patch))
+fn parse_version(bytes: &[u8]) -> Option<CliVersion> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let line = text
+        .strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+        .unwrap_or(text);
+    if line
+        .chars()
+        .any(|ch| (ch.is_control() && ch != '\t') || matches!(ch, '\u{2028}' | '\u{2029}'))
+    {
+        return None;
+    }
+    let line = line.trim_matches([' ', '\t']);
+    if line.is_empty() {
+        return None;
+    }
+
+    let head = strip_trailing_parenthetical(line)?;
+    let mut tokens = head.split([' ', '\t']).filter(|token| !token.is_empty());
+    let version_token = match (tokens.next(), tokens.next(), tokens.next()) {
+        (Some(version), None, None) => version,
+        (Some(cli), Some(version), None) if is_recognized_cli_name(cli) => version,
+        _ => return None,
+    };
+
+    let semver = version_token.strip_prefix('v').unwrap_or(version_token);
+    let (without_build, build) = match semver.split_once('+') {
+        Some((core_and_pre, build)) => (core_and_pre, Some(build)),
+        None => (semver, None),
+    };
+    let (core, pre) = match without_build.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (without_build, None),
+    };
+    if pre.is_some_and(|tag| !is_valid_semver_identifiers(tag))
+        || build.is_some_and(|tag| !is_valid_semver_identifiers(tag))
+    {
+        return None;
+    }
+
+    let mut components = core.split('.');
+    let major = parse_semver_component(components.next()?)?;
+    let minor = parse_semver_component(components.next()?)?;
+    let patch = parse_semver_component(components.next()?)?;
+    components.next().is_none().then_some(CliVersion {
+        major,
+        minor,
+        patch,
+        stable: pre.is_none(),
+    })
+}
+
+fn strip_trailing_parenthetical(line: &str) -> Option<&str> {
+    let Some(before_close) = line.strip_suffix(')') else {
+        return Some(line);
+    };
+    let (prefix, body) = before_close.split_once('(')?;
+    if !prefix.ends_with([' ', '\t'])
+        || body.contains(['(', ')'])
+        || body.trim_matches([' ', '\t']).is_empty()
+    {
+        return None;
+    }
+    Some(prefix.trim_end_matches([' ', '\t']))
+}
+
+fn is_recognized_cli_name(token: &str) -> bool {
+    [
+        "agy",
+        "agy.exe",
+        "antigravity",
+        "antigravity.exe",
+        "antigravity-cli",
+        "antigravity-cli.exe",
+    ]
+    .iter()
+    .any(|name| token.eq_ignore_ascii_case(name))
+}
+
+fn parse_semver_component(part: &str) -> Option<u64> {
+    if part.is_empty()
+        || !part.bytes().all(|b| b.is_ascii_digit())
+        || (part.len() > 1 && part.starts_with('0'))
+    {
+        return None;
+    }
+    part.parse().ok()
+}
+
+fn is_valid_semver_identifiers(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag
+            .split('.')
+            .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 #[cfg(test)]
@@ -429,9 +531,161 @@ mod tests {
     #[test]
     fn only_exact_semver_versions_enable_usage_command() {
         assert_eq!(parse_version(b"1.1.11\n"), Some(MIN_VERSION));
+        assert!(parse_version(b"agy 1.1.27\n").is_some_and(|version| version >= MIN_VERSION));
         assert!(parse_version(b"1.1\n").is_none());
-        assert!(parse_version(b"agy 1.1.27\n").is_none());
         assert!(parse_version(b"1.1.27 extra\n").is_none());
+    }
+
+    #[test]
+    fn version_parser_accepts_cli_prefixes_prerelease_build_and_parenthetical_tags() {
+        let stable_1_6_0 = Some(CliVersion {
+            major: 1,
+            minor: 6,
+            patch: 0,
+            stable: true,
+        });
+        let prerelease_1_6_0 = Some(CliVersion {
+            major: 1,
+            minor: 6,
+            patch: 0,
+            stable: false,
+        });
+
+        for (input, expected) in [
+            (b"1.6.0".as_slice(), stable_1_6_0),
+            (b"1.6.0\n", stable_1_6_0),
+            (b"1.6.0\r\n", stable_1_6_0),
+            (b"  1.6.0  \n", stable_1_6_0),
+            (b"v1.6.0\n", stable_1_6_0),
+            (b"agy 1.6.0\n", stable_1_6_0),
+            (b"agy\t1.6.0\n", stable_1_6_0),
+            (b"AGY v1.6.0\n", stable_1_6_0),
+            (b"agy.exe 1.6.0\n", stable_1_6_0),
+            (b"AGY.EXE v1.6.0\n", stable_1_6_0),
+            (b"antigravity 1.6.0\n", stable_1_6_0),
+            (b"Antigravity.Exe 1.6.0\n", stable_1_6_0),
+            (b"antigravity-cli 1.6.0\n", stable_1_6_0),
+            (b"Antigravity-CLI.exe v1.6.0\n", stable_1_6_0),
+            (b"1.6.0-beta.1\n", prerelease_1_6_0),
+            (b"1.6.0-alpha-1.0\n", prerelease_1_6_0),
+            (b"1.6.0+meta\n", stable_1_6_0),
+            (b"1.6.0+build-123\n", stable_1_6_0),
+            (b"v1.6.0-rc.1+build.42\n", prerelease_1_6_0),
+            (b"1.6.0 (build 123)\n", stable_1_6_0),
+            (b"agy v1.6.0 (abc1234)\n", stable_1_6_0),
+            (b"agy 1.6.0-rc.1 (abc1234)\n", prerelease_1_6_0),
+            (b"antigravity-cli v1.6.0+meta (2026-11-28)\n", stable_1_6_0),
+        ] {
+            let parsed = parse_version(input);
+            assert_eq!(
+                parsed,
+                expected,
+                "unexpected parse result for {:?}",
+                String::from_utf8_lossy(input)
+            );
+            assert!(parsed.unwrap() >= MIN_VERSION);
+        }
+    }
+
+    #[test]
+    fn version_parser_enforces_min_version_including_prerelease_precedence() {
+        for below in [
+            b"0.0.0\n".as_slice(),
+            b"0.9.9\n",
+            b"1.1.10\n",
+            b"1.1.11-rc.1\n",
+            b"1.1.11-rc.1+build.1\n",
+            b"agy v1.1.11-beta.2 (abc1234)\n",
+        ] {
+            let parsed = parse_version(below).unwrap_or_else(|| {
+                panic!("expected {:?} to parse", String::from_utf8_lossy(below))
+            });
+            assert!(
+                parsed < MIN_VERSION,
+                "expected {:?} ({parsed:?}) < MIN_VERSION ({MIN_VERSION:?})",
+                String::from_utf8_lossy(below)
+            );
+        }
+
+        for at_or_above in [
+            b"1.1.11\n".as_slice(),
+            b"v1.1.11\n",
+            b"1.1.11+meta\n",
+            b"1.1.11+build-1\n",
+            b"agy 1.1.11+meta (build 1)\n",
+            b"1.1.12-rc.1\n",
+            b"1.6.0-beta.1\n",
+        ] {
+            let parsed = parse_version(at_or_above).unwrap_or_else(|| {
+                panic!(
+                    "expected {:?} to parse",
+                    String::from_utf8_lossy(at_or_above)
+                )
+            });
+            assert!(
+                parsed >= MIN_VERSION,
+                "expected {:?} ({parsed:?}) >= MIN_VERSION ({MIN_VERSION:?})",
+                String::from_utf8_lossy(at_or_above)
+            );
+        }
+    }
+
+    #[test]
+    fn version_parser_rejects_malformed_multiline_and_unrelated_output() {
+        for rejected in [
+            b"".as_slice(),
+            b"   \n",
+            b"\xff1.6.0\n",
+            b"agy\n",
+            b"agy v\n",
+            b"agy (build 123)\n",
+            b"(build 123)\n",
+            b"1.1\n",
+            b"1.6.0.1\n",
+            b"1.+1.11\n",
+            b"+1.1.11\n",
+            b"01.1.11\n",
+            b"1.01.11\n",
+            b"1.1.011\n",
+            b"vv1.6.0\n",
+            b"V1.6.0\n",
+            b"1.6.0-\n",
+            b"1.6.0+\n",
+            b"1.6.0-+meta\n",
+            b"1.6.0-beta..1\n",
+            b"1.6.0-.beta\n",
+            b"1.6.0-beta.\n",
+            b"1.6.0+meta..1\n",
+            b"1.6.0+a!b\n",
+            b"1.6.0+a+b\n",
+            b"1.6.0-()\n",
+            b"1.6.0 ()\n",
+            b"1.6.0 (   )\n",
+            b"1.6.0 (a (b))\n",
+            b"1.6.0 (a (b)\n",
+            b"1.6.0 (a) (b)\n",
+            b"1.6.0 (a))\n",
+            b"1.6.0(build 123)\n",
+            b"1.6.0 (unclosed\n",
+            b"1.6.0 (a) extra\n",
+            b"1.1.27 extra\n",
+            b"agy 1.1.27 extra\n",
+            b"agy cli 1.6.0\n",
+            b"Error: requires node 18.0.0\n",
+            b"other-tool 2.0.0\n",
+            b"agy 1.6.0\nextra line\n",
+            b"\n1.6.0\n",
+            b"1.6.0\n\n",
+            b"1.6.0\r1.6.0\n",
+            b"1.6.0\x1b[0m\n",
+            "1.6.0 (a\u{2028}b)\n".as_bytes(),
+        ] {
+            assert!(
+                parse_version(rejected).is_none(),
+                "expected {:?} to be rejected",
+                String::from_utf8_lossy(rejected)
+            );
+        }
     }
 
     #[test]
