@@ -1,5 +1,5 @@
 use super::*;
-use crate::model::{number, timestamp};
+use crate::model::{number, percent100, timestamp};
 use std::{ffi::OsString, path::Path};
 pub struct Kimi;
 const D: Descriptor = Descriptor {
@@ -92,21 +92,42 @@ impl Provider for Kimi {
         fetch_at(client, credentials, ENDPOINT, REFRESH, false).await
     }
     fn parse(&self, payload: &Value) -> Result<Usage> {
+        const LIST_KEYS: [&str; 4] = ["limits", "usages", "quotas", "windows"];
+        let has_top_level = payload.get("usage").is_some_and(Value::is_object)
+            || LIST_KEYS
+                .iter()
+                .any(|key| payload.get(key).is_some_and(Value::is_array));
+        let root = if !has_top_level
+            && let Some(data) = payload.get("data").filter(|value| value.is_object())
+        {
+            data
+        } else {
+            payload
+        };
+
         let mut meters = Vec::new();
-        if let Some(meter) = kimi_meter("Total", &payload["usage"]) {
+        if let Some(meter) = kimi_meter("Total", &root["usage"]) {
             meters.push(meter);
         }
-        if let Some(limits) = payload["limits"].as_array() {
-            for (i, item) in limits.iter().enumerate() {
-                let label = match (
-                    item["window"]["duration"].as_i64(),
-                    item["window"]["timeUnit"].as_str(),
-                ) {
-                    (Some(n), Some(unit)) => format!("{n} {}", unit.to_lowercase()),
-                    _ => format!("Window {}", i + 1),
-                };
-                if let Some(m) = kimi_meter(&label, item.get("detail").unwrap_or(item)) {
-                    meters.push(m);
+        if let Some(items) = ["limits", "usages", "quotas", "windows", "data"]
+            .iter()
+            .find_map(|key| {
+                root.get(key)
+                    .and_then(Value::as_array)
+                    .filter(|array| !array.is_empty())
+            })
+        {
+            for (i, item) in items.iter().enumerate() {
+                let label = kimi_window_label(item, i);
+                let detail = item
+                    .get("detail")
+                    .filter(|value| value.is_object())
+                    .unwrap_or(item);
+                if let Some(mut meter) = kimi_meter(&label, detail) {
+                    if meter.resets_at.is_none() && !std::ptr::eq(detail, item) {
+                        meter.resets_at = kimi_resets_at(item);
+                    }
+                    meters.push(meter);
                 }
             }
         }
@@ -115,12 +136,46 @@ impl Provider for Kimi {
         }
         Ok(Usage {
             meters,
-            plan: string_at(payload, &["plan", "plan_name"]),
+            plan: string_at(root, &["plan", "plan_name"])
+                .or_else(|| string_at(payload, &["plan", "plan_name"])),
             ..Default::default()
         })
     }
 }
-fn kimi_meter(label: &str, value: &Value) -> Option<Meter> {
+fn kimi_window_label(item: &Value, index: usize) -> String {
+    if let (Some(duration), Some(unit)) = (
+        item["window"]["duration"].as_i64(),
+        item["window"]["timeUnit"].as_str(),
+    ) {
+        let unit = unit.trim();
+        if duration > 0 && !unit.is_empty() {
+            return format!("{duration} {}", unit.to_lowercase());
+        }
+    }
+    for key in ["name", "label", "title", "scope"] {
+        if let Some(text) = item
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && !text.eq_ignore_ascii_case("<redacted>"))
+        {
+            return text.to_owned();
+        }
+    }
+    format!("Window {}", index + 1)
+}
+fn kimi_used_percent(value: &Value) -> Option<f32> {
+    if let Some(raw) = ["used_percent", "usedPercent"]
+        .iter()
+        .find_map(|key| value.get(key).filter(|v| !v.is_null()))
+    {
+        return percent100(raw);
+    }
+    if let Some(raw) = value.get("remaining_fraction").filter(|v| !v.is_null()) {
+        return number(raw)
+            .filter(|fraction| (0.0..=1.0).contains(fraction))
+            .map(|fraction| ((1.0 - fraction) * 100.0).clamp(0.0, 100.0) as f32);
+    }
     let limit = number(&value["limit"])?;
     if limit <= 0.0 {
         return None;
@@ -130,19 +185,31 @@ fn kimi_meter(label: &str, value: &Value) -> Option<Meter> {
     if used < 0.0 {
         return None;
     }
-    let resets_at = ["reset_at", "resetAt", "reset_time", "resetTime"]
-        .iter()
-        .find_map(|k| value.get(k).and_then(timestamp))
-        .or_else(|| {
-            ["reset_in", "resetIn", "ttl"]
-                .iter()
-                .find_map(|k| value.get(k).and_then(number))
-                .map(|s| OffsetDateTime::now_utc() + time::Duration::seconds(s as i64))
-        });
+    Some((used / limit * 100.0).clamp(0.0, 100.0) as f32)
+}
+fn kimi_resets_at(value: &Value) -> Option<OffsetDateTime> {
+    [
+        "resets_at",
+        "reset_at",
+        "resetAt",
+        "reset_time",
+        "resetTime",
+    ]
+    .iter()
+    .find_map(|k| value.get(k).and_then(timestamp))
+    .or_else(|| {
+        ["reset_in", "resetIn", "ttl"]
+            .iter()
+            .find_map(|k| value.get(k).and_then(number))
+            .map(|s| OffsetDateTime::now_utc() + time::Duration::seconds(s as i64))
+    })
+}
+fn kimi_meter(label: &str, value: &Value) -> Option<Meter> {
+    let used_percent = kimi_used_percent(value)?;
     Some(Meter {
         label: label.into(),
-        used_percent: (used / limit * 100.0).clamp(0.0, 100.0) as f32,
-        resets_at,
+        used_percent,
+        resets_at: kimi_resets_at(value),
     })
 }
 #[cfg(test)]
@@ -334,6 +401,118 @@ mod tests {
         assert_eq!(u.meters[0].used_percent, 25.0);
         assert_eq!(u.meters[1].used_percent, 20.0);
         assert!(Kimi.parse(&json!({"usage":{"limit":100}})).is_err());
+    }
+
+    #[test]
+    fn synthetic_explicit_percent_and_remaining_fraction_fields() {
+        let usage = Kimi
+            .parse(&json!({
+                "usage": {
+                    "used_percent": 1,
+                    "resets_at": "2026-12-01T00:00:00Z"
+                },
+                "limits": [
+                    {
+                        "name": "Burst",
+                        "detail": {"usedPercent": 42.5}
+                    },
+                    {
+                        "label": "Weekly",
+                        "remaining_fraction": 0.25,
+                        "resets_at": "2026-12-07T00:00:00Z"
+                    },
+                    {
+                        "title": "Fresh",
+                        "remaining_fraction": 1.0
+                    }
+                ]
+            }))
+            .unwrap();
+        assert_eq!(usage.meters.len(), 4);
+        assert_eq!(usage.meters[0].label, "Total");
+        assert_eq!(usage.meters[0].used_percent, 1.0);
+        assert!(usage.meters[0].resets_at.is_some());
+        assert_eq!(usage.meters[1].label, "Burst");
+        assert_eq!(usage.meters[1].used_percent, 42.5);
+        assert_eq!(usage.meters[2].label, "Weekly");
+        assert_eq!(usage.meters[2].used_percent, 75.0);
+        assert!(usage.meters[2].resets_at.is_some());
+        assert_eq!(usage.meters[3].label, "Fresh");
+        assert_eq!(usage.meters[3].used_percent, 0.0);
+
+        for invalid in [
+            json!({"usage": {"used_percent": null}}),
+            json!({"usage": {"used_percent": -1}}),
+            json!({"usage": {"used_percent": 101}}),
+            json!({"usage": {"usedPercent": "bad"}}),
+            json!({"usage": {"remaining_fraction": -0.1}}),
+            json!({"usage": {"remaining_fraction": 1.5}}),
+            json!({"usage": {"remaining_fraction": "bad"}}),
+        ] {
+            assert!(Kimi.parse(&invalid).is_err(), "expected invalid: {invalid}");
+        }
+    }
+
+    #[test]
+    fn synthetic_alternative_wrappers_and_item_labels() {
+        for key in ["usages", "quotas", "windows", "data"] {
+            let payload = json!({
+                key: [
+                    {"scope": "Coding", "used_percent": 33},
+                    {"remaining_fraction": 0.5}
+                ]
+            });
+            let usage = Kimi.parse(&payload).unwrap();
+            assert_eq!(usage.meters.len(), 2, "wrapper {key}");
+            assert_eq!(usage.meters[0].label, "Coding");
+            assert_eq!(usage.meters[0].used_percent, 33.0);
+            assert_eq!(usage.meters[1].label, "Window 2");
+            assert_eq!(usage.meters[1].used_percent, 50.0);
+        }
+
+        let enveloped = Kimi
+            .parse(&json!({
+                "data": {
+                    "plan": "Synthetic Pro",
+                    "usage": {"used_percent": 12.5},
+                    "quotas": [
+                        {
+                            "detail": {"limit": 20, "used": 5},
+                            "window": {"duration": 3, "timeUnit": "HOUR"}
+                        }
+                    ]
+                }
+            }))
+            .unwrap();
+        assert_eq!(enveloped.plan.as_deref(), Some("Synthetic Pro"));
+        assert_eq!(enveloped.meters.len(), 2);
+        assert_eq!(enveloped.meters[0].label, "Total");
+        assert_eq!(enveloped.meters[0].used_percent, 12.5);
+        assert_eq!(enveloped.meters[1].label, "3 hour");
+        assert_eq!(enveloped.meters[1].used_percent, 25.0);
+
+        // Edge cases: empty earlier list key falls through, redacted/blank labels fall back
+        // to Window N, null used_percent falls through to remaining_fraction, and outer
+        // resets_at populates when detail lacks one.
+        let edge = Kimi
+            .parse(&json!({
+                "plan_name": "Outer Synthetic Plan",
+                "limits": [],
+                "usages": [
+                    {
+                        "name": "<redacted>",
+                        "label": "   ",
+                        "resets_at": "2026-12-02T00:00:00Z",
+                        "detail": {"used_percent": null, "remaining_fraction": 0.4}
+                    }
+                ]
+            }))
+            .unwrap();
+        assert_eq!(edge.plan.as_deref(), Some("Outer Synthetic Plan"));
+        assert_eq!(edge.meters.len(), 1);
+        assert_eq!(edge.meters[0].label, "Window 1");
+        assert_eq!(edge.meters[0].used_percent, 60.0);
+        assert!(edge.meters[0].resets_at.is_some());
     }
 
     const KIMI_USAGE_JSON: &str = r#"{"usage":{"limit":100,"remaining":75}}"#;

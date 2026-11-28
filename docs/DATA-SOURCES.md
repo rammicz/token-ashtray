@@ -15,8 +15,10 @@ Sign in using the service that owns the login; Token Ashtray has no login form
 or API-key setup. Claude uses `claude` then `/login`, Codex uses `codex login`,
 Grok uses its CLI sign-in, and Kimi uses `kimi login`. Cursor and Grok Bot share
 Cursor desktop sign-in and read its SQLite storage without modifying it.
-Copilot uses `copilot login` or an editor sign-in; already-set
-`GITHUB_COPILOT_API_TOKEN` and then `GITHUB_TOKEN` take priority over its files.
+Copilot uses `copilot login`, an editor sign-in, or a read-only `gh auth login`
+`hosts.yml` fallback (never reading OS keyrings); already-set
+`GITHUB_COPILOT_GITHUB_TOKEN`, `COPILOT_GITHUB_TOKEN`,
+`GITHUB_COPILOT_API_TOKEN`, and then `GITHUB_TOKEN` take priority over its files.
 Mistral Vibe uses `MISTRAL_API_KEY` from the environment or `~/.vibe/.env` when
 present; otherwise it queries the installed first-party `vibe-app-server` over
 stdio JSON-RPC using an ephemeral session inside an isolated temporary
@@ -389,7 +391,7 @@ known quota value.
 
 | | |
 |---|---|
-| Credentials | environment first, then `apps.json` / `hosts.json` |
+| Credentials | environment first, then `apps.json` / `hosts.json`, then `gh` CLI `hosts.yml` (read-only) |
 | Endpoint | `GET https://api.github.com/copilot_internal/user` |
 | Refresh writes file | No |
 | User-facing page | `https://github.com/settings/copilot` |
@@ -397,14 +399,22 @@ known quota value.
 Resolution order:
 
 ```
-1. $GITHUB_COPILOT_API_TOKEN
-2. $GITHUB_TOKEN
-3. first existing apps.json / hosts.json under:
+1. $GITHUB_COPILOT_GITHUB_TOKEN
+2. $COPILOT_GITHUB_TOKEN
+3. $GITHUB_COPILOT_API_TOKEN
+4. $GITHUB_TOKEN
+5. first existing apps.json / hosts.json under:
      ~/.config/github-copilot/
      ~/Library/Application Support/github-copilot/
      ~/AppData/Local/github-copilot/
      %LOCALAPPDATA%\github-copilot\
      %APPDATA%\GitHub Copilot\
+6. first existing gh CLI hosts.yml (github.com block only, read-only) under:
+     $GH_CONFIG_DIR/hosts.yml
+     $XDG_CONFIG_HOME/gh/hosts.yml
+     ~/.config/gh/hosts.yml
+     %APPDATA%\GitHub CLI\hosts.yml
+     ~/Library/Application Support/GitHub CLI/hosts.yml
 ```
 
 Notes:
@@ -414,6 +424,22 @@ Notes:
   object and take the first plausible token field rather than assuming a path.
 - Environment variables win over files, so a user can override without touching
   their editor install.
+- `hosts.yml` is parsed read-only without external YAML dependencies and is
+  scoped strictly to the indent-0 `github.com:` host block so enterprise-host
+  tokens are never extracted. Both classic flat `oauth_token:` and `gh` 2.40+
+  `users: -> <user>: -> oauth_token:` layouts (preferring the active `user:`)
+  are supported. Token Ashtray never reads the OS keyring; a keyring-backed
+  `hosts.yml` with no plaintext `oauth_token` falls through to `Reconnect`, not
+  `Error`, while an unreadable `hosts.yml` reports `Error` without leaking file
+  contents.
+- `quota_snapshots` recognises `premium_interactions` ("Premium requests"),
+  `chat` ("Chat"), `completions` ("Completions"), `ai_credits` ("AI credits"),
+  and `credits` ("Credits"). Each snapshot reads `percent_remaining` on an
+  explicit `0–100` scale; when `percent_remaining` is absent or `null`, it falls
+  back to `((entitlement − remaining) / entitlement × 100)` clamped to `0–100`
+  using `entitlement` (`> 0`) and `remaining` or `quota_remaining`. Snapshots
+  with `unlimited: true`, `entitlement <= 0`, invalid `percent_remaining`, or
+  missing `remaining` are skipped without fabricating `0%`.
 
 ---
 
@@ -428,6 +454,23 @@ Notes:
 | Token refresh | `POST https://auth.kimi.com/api/oauth/token` |
 | Refresh writes file | **Yes** |
 | User-facing page | `https://www.kimi.com/code` |
+
+Notes:
+
+- Kimi's captured-account evidence remains deferred (see
+  [§12](#kimi-fixture-evidence)); schema variants below are verified with
+  explicitly synthetic unit tests only.
+- Response parsing accepts top-level `usage` ("Total") and list wrappers
+  `limits`, `usages`, `quotas`, `windows`, and `data` (where `data` may be a
+  direct JSON array or an envelope object wrapping `usage` / list keys). Window
+  labels derive from `window.{duration,timeUnit}` or item `name`, `label`,
+  `title`, or `scope` (ignoring blank or `"<redacted>"` values) before falling
+  back to `Window N`.
+- Each meter accepts explicit `0–100` `used_percent` / `usedPercent`, a
+  `0.0..=1.0` `remaining_fraction` (`(1 − f) × 100`), or `limit` (`> 0`) with
+  `used` / `remaining`, plus reset aliases `resets_at`, `reset_at`, `resetAt`,
+  `reset_time`, `resetTime`, and relative `reset_in` / `resetIn` / `ttl`.
+  Missing or out-of-range values are rejected rather than mapped to `0%`.
 
 ---
 

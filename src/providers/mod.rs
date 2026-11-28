@@ -174,6 +174,20 @@ mod credential_path_tests {
                 PathBuf::from("/fixture/roaming/GitHub Copilot"),
             ]
         );
+        let copilot_gh = copilot::gh_hosts_candidates_from(
+            &bases,
+            Some(std::ffi::OsString::from("/fixture/gh")),
+        );
+        assert_eq!(
+            copilot_gh,
+            [
+                PathBuf::from("/fixture/gh/hosts.yml"),
+                PathBuf::from("/fixture/xdg/gh/hosts.yml"),
+                PathBuf::from("/fixture/home/.config/gh/hosts.yml"),
+                PathBuf::from("/fixture/roaming/GitHub CLI/hosts.yml"),
+                PathBuf::from("/fixture/home/Library/Application Support/GitHub CLI/hosts.yml"),
+            ]
+        );
 
         let home_only = crate::platform::CredentialBasePaths {
             home: PathBuf::from("/fixture/home"),
@@ -191,6 +205,13 @@ mod credential_path_tests {
             ]
         );
         assert_eq!(copilot::candidate_directories_from(&home_only).len(), 3);
+        assert_eq!(
+            copilot::gh_hosts_candidates_from(&home_only, None),
+            [
+                PathBuf::from("/fixture/home/.config/gh/hosts.yml"),
+                PathBuf::from("/fixture/home/Library/Application Support/GitHub CLI/hosts.yml"),
+            ]
+        );
     }
 }
 
