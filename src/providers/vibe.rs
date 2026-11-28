@@ -332,31 +332,19 @@ async fn query_app_server_with_timeout(binary: &Path, timeout: Duration) -> Resu
             }
             Ok(json!({ "account": account }))
         }
-        Ok(Err(RpcError::TooLarge)) => {
+        other => {
             drop(stdin);
             drop(reader);
             stop(&mut child).await;
-            Err(ProviderError::error(
-                "Mistral Vibe app server returned more output than the safe limit",
-            ))
-        }
-        Ok(Err(RpcError::Io(message))) => {
-            drop(stdin);
-            drop(reader);
-            stop(&mut child).await;
+            let message = match other {
+                Ok(Err(RpcError::TooLarge)) => {
+                    "Mistral Vibe app server returned more output than the safe limit"
+                }
+                Ok(Err(RpcError::Io(message) | RpcError::Protocol(message))) => message,
+                Err(_) => "Mistral Vibe account check timed out",
+                Ok(Ok(_)) => unreachable!(),
+            };
             Err(ProviderError::error(message))
-        }
-        Ok(Err(RpcError::Protocol(message))) => {
-            drop(stdin);
-            drop(reader);
-            stop(&mut child).await;
-            Err(ProviderError::error(message))
-        }
-        Err(_) => {
-            drop(stdin);
-            drop(reader);
-            stop(&mut child).await;
-            Err(ProviderError::error("Mistral Vibe account check timed out"))
         }
     };
     drop(isolated);
@@ -478,6 +466,38 @@ async fn stop_session(
     Ok(())
 }
 
+fn finish_usage(
+    mut plan: Option<String>,
+    payg: bool,
+    used_percent: Option<f64>,
+    resets_at: Option<OffsetDateTime>,
+) -> Result<Usage> {
+    if payg {
+        plan = Some(format!(
+            "{} · pay-as-you-go",
+            plan.unwrap_or_else(|| "Vibe".into())
+        ));
+    }
+    let mut meters = Vec::new();
+    // usage_percentage / usagePercentage is a 0–100 percentage and may exceed
+    // 100 under pay-as-you-go; the meter clamps at 100.
+    if let Some(used) = used_percent.filter(|used| *used >= 0.0) {
+        meters.push(Meter {
+            label: "Vibe Code allowance".into(),
+            used_percent: (used as f32).clamp(0.0, 100.0),
+            resets_at,
+        });
+    }
+    if meters.is_empty() && plan.is_none() {
+        return Err(D.invalid());
+    }
+    Ok(Usage {
+        plan,
+        meters,
+        ..Default::default()
+    })
+}
+
 fn parse_account_view(account: &Value) -> Result<Usage> {
     match account.get("status").and_then(Value::as_str) {
         Some("ready") => {}
@@ -496,82 +516,35 @@ fn parse_account_view(account: &Value) -> Result<Usage> {
     }
 
     let plan_obj = &account["plan"];
-    let mut plan = string_at(plan_obj, &["title"])
+    let plan = string_at(plan_obj, &["title"])
         .map(|title| title.trim().to_owned())
         .filter(|title| !title.is_empty())
         .or_else(|| string_at(plan_obj, &["name"]).and_then(|name| format_plan_name(&name)));
 
     let budget = &account["budget"];
-    if budget.get("paygEnabled").and_then(Value::as_bool) == Some(true) {
-        plan = Some(format!(
-            "{} · pay-as-you-go",
-            plan.unwrap_or_else(|| "Vibe".into())
-        ));
-    }
-
-    let mut meters = Vec::new();
-    if let Some(used) = budget
-        .get("usagePercentage")
-        .and_then(number)
-        .filter(|used| *used >= 0.0)
-    {
-        meters.push(Meter {
-            label: "Vibe Code allowance".into(),
-            used_percent: (used as f32).clamp(0.0, 100.0),
-            resets_at: budget.get("resetAt").and_then(timestamp),
-        });
-    }
-
-    if meters.is_empty() && plan.is_none() {
-        return Err(D.invalid());
-    }
-    Ok(Usage {
-        plan,
-        meters,
-        ..Default::default()
-    })
+    let payg = budget.get("paygEnabled").and_then(Value::as_bool) == Some(true);
+    let used = budget.get("usagePercentage").and_then(number);
+    let resets_at = budget.get("resetAt").and_then(timestamp);
+    finish_usage(plan, payg, used, resets_at)
 }
 
 fn parse_http_payload(payload: &Value) -> Result<Usage> {
     let subscription = &payload["subscription"];
-    let mut plan = string_at(subscription, &["plan_name"]).and_then(|name| format_plan_name(&name));
+    let plan = string_at(subscription, &["plan_name"]).and_then(|name| format_plan_name(&name));
     let budget = &payload["budget"]["vibe_budget"];
     let payg = [&budget["payg_enabled"], &subscription["vibe_payg_enabled"]]
         .into_iter()
-        .find_map(Value::as_bool);
-    if payg == Some(true) {
-        plan = Some(format!(
-            "{} · pay-as-you-go",
-            plan.unwrap_or_else(|| "Vibe".into())
-        ));
-    }
+        .find_map(Value::as_bool)
+        == Some(true);
     let has_positive_initial = budget
         .get("initial_budget")
         .and_then(number)
         .is_none_or(|initial| initial > 0.0);
-    let mut meters = Vec::new();
-    // usage_percentage is a 0–100 percentage and may exceed 100 under
-    // pay-as-you-go; the meter clamps at 100.
-    if has_positive_initial
-        && let Some(used) = budget
-            .get("usage_percentage")
-            .and_then(number)
-            .filter(|used| *used >= 0.0)
-    {
-        meters.push(Meter {
-            label: "Vibe Code allowance".into(),
-            used_percent: (used as f32).clamp(0.0, 100.0),
-            resets_at: budget.get("reset_at").and_then(timestamp),
-        });
-    }
-    if meters.is_empty() && plan.is_none() {
-        return Err(D.invalid());
-    }
-    Ok(Usage {
-        plan,
-        meters,
-        ..Default::default()
-    })
+    let used = has_positive_initial
+        .then(|| budget.get("usage_percentage").and_then(number))
+        .flatten();
+    let resets_at = budget.get("reset_at").and_then(timestamp);
+    finish_usage(plan, payg, used, resets_at)
 }
 
 #[async_trait]
