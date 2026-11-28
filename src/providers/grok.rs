@@ -115,15 +115,15 @@ impl Provider for Grok {
     }
 }
 
-async fn fetch_endpoints(
+async fn fetch_endpoints<'a>(
     client: &Client,
     token: &str,
     user_id: Option<&str>,
     client_version: &str,
-    endpoints: GrokEndpoints<'_>,
+    endpoints: GrokEndpoints<'a>,
     auxiliary_timeout: Duration,
 ) -> Result<Value> {
-    let request = |endpoint: &str, timeout: Option<Duration>| {
+    let fetch_one = |endpoint: &'a str, timeout: Option<Duration>| {
         let mut request = client
             .get(endpoint)
             .bearer_auth(token)
@@ -136,49 +136,21 @@ async fn fetch_endpoints(
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);
         }
-        request
+        let send = request.send();
+        async move { response(send.await, endpoint, D).await }
     };
     let (user_res, billing_res, credits_res) = tokio::join!(
-        async {
-            response(
-                request(endpoints.user, Some(auxiliary_timeout))
-                    .send()
-                    .await,
-                endpoints.user,
-                D,
-            )
-            .await
-        },
-        async {
-            response(
-                request(endpoints.billing, Some(auxiliary_timeout))
-                    .send()
-                    .await,
-                endpoints.billing,
-                D,
-            )
-            .await
-        },
-        async {
-            response(
-                request(endpoints.credits, None).send().await,
-                endpoints.credits,
-                D,
-            )
-            .await
-        }
+        fetch_one(endpoints.user, Some(auxiliary_timeout)),
+        fetch_one(endpoints.billing, Some(auxiliary_timeout)),
+        fetch_one(endpoints.credits, None),
     );
-    for result in [&credits_res, &user_res, &billing_res] {
-        if let Err(error) = result
-            && error.status == Status::Reconnect
-        {
-            return Err(error.clone());
-        }
-    }
     let mut rate_limit: Option<ProviderError> = None;
     for result in [&credits_res, &user_res, &billing_res] {
-        if let Err(error) = result
-            && let Some(secs) = error.retry_after_secs
+        let Err(error) = result else { continue };
+        if error.status == Status::Reconnect {
+            return Err(error.clone());
+        }
+        if let Some(secs) = error.retry_after_secs
             && rate_limit
                 .as_ref()
                 .is_none_or(|prev| secs > prev.retry_after_secs.unwrap_or(0))
@@ -848,26 +820,21 @@ mod tests {
             .unwrap()
     }
 
-    #[tokio::test]
-    async fn auxiliary_endpoint_failures_degrade_to_null_when_credits_succeeds() {
-        let client = local_client();
-
-        // /user returns 500 while /billing and post-reset /credits succeed.
-        let (user_url, user_srv) = spawn_local_endpoint(
-            "/v1/user?include=subscription",
-            MockReply::status(500, "internal error"),
-        );
-        let (billing_url, billing_srv) =
-            spawn_local_endpoint("/v1/billing", MockReply::ok(LEGACY_ZERO_BILLING_JSON));
-        let (credits_url, credits_srv) = spawn_local_endpoint(
-            "/v1/billing?format=credits",
-            MockReply::ok(POST_RESET_CREDITS_JSON),
-        );
-        let payload = fetch_endpoints(
-            &client,
+    async fn run_local_fetch(
+        client: &Client,
+        user_id: Option<&str>,
+        client_version: &str,
+        replies: (MockReply, MockReply, MockReply),
+    ) -> (Result<Value>, [String; 3], [String; 3]) {
+        let (user_url, user_srv) = spawn_local_endpoint("/v1/user?include=subscription", replies.0);
+        let (billing_url, billing_srv) = spawn_local_endpoint("/v1/billing", replies.1);
+        let (credits_url, credits_srv) =
+            spawn_local_endpoint("/v1/billing?format=credits", replies.2);
+        let result = fetch_endpoints(
+            client,
             "synthetic-token",
-            Some("synthetic-user"),
-            DEFAULT_CLIENT_VERSION,
+            user_id,
+            client_version,
             GrokEndpoints {
                 user: &user_url,
                 billing: &billing_url,
@@ -875,11 +842,32 @@ mod tests {
             },
             Duration::from_secs(2),
         )
-        .await
-        .unwrap();
-        user_srv.join().unwrap();
-        billing_srv.join().unwrap();
-        credits_srv.join().unwrap();
+        .await;
+        let requests = [
+            user_srv.join().unwrap(),
+            billing_srv.join().unwrap(),
+            credits_srv.join().unwrap(),
+        ];
+        (result, [user_url, billing_url, credits_url], requests)
+    }
+
+    #[tokio::test]
+    async fn auxiliary_endpoint_failures_degrade_to_null_when_credits_succeeds() {
+        let client = local_client();
+
+        // /user returns 500 while /billing and post-reset /credits succeed.
+        let (result, _, _) = run_local_fetch(
+            &client,
+            Some("synthetic-user"),
+            DEFAULT_CLIENT_VERSION,
+            (
+                MockReply::status(500, "internal error"),
+                MockReply::ok(LEGACY_ZERO_BILLING_JSON),
+                MockReply::ok(POST_RESET_CREDITS_JSON),
+            ),
+        )
+        .await;
+        let payload = result.unwrap();
         assert_eq!(payload["user"], Value::Null);
         let usage = Grok.parse(&payload).unwrap();
         assert_eq!(usage.meters.len(), 1);
@@ -888,31 +876,18 @@ mod tests {
         assert_eq!(usage.plan.as_deref(), Some("Unified credits · weekly"));
 
         // /billing returns non-JSON 200 and /user drops connection while /credits succeeds.
-        let (user_url, user_srv) =
-            spawn_local_endpoint("/v1/user?include=subscription", MockReply::Close);
-        let (billing_url, billing_srv) =
-            spawn_local_endpoint("/v1/billing", MockReply::ok("<html>not json</html>"));
-        let (credits_url, credits_srv) = spawn_local_endpoint(
-            "/v1/billing?format=credits",
-            MockReply::ok(POST_RESET_CREDITS_JSON),
-        );
-        let payload = fetch_endpoints(
+        let (result, _, _) = run_local_fetch(
             &client,
-            "synthetic-token",
             None,
             DEFAULT_CLIENT_VERSION,
-            GrokEndpoints {
-                user: &user_url,
-                billing: &billing_url,
-                credits: &credits_url,
-            },
-            Duration::from_secs(2),
+            (
+                MockReply::Close,
+                MockReply::ok("<html>not json</html>"),
+                MockReply::ok(POST_RESET_CREDITS_JSON),
+            ),
         )
-        .await
-        .unwrap();
-        user_srv.join().unwrap();
-        billing_srv.join().unwrap();
-        credits_srv.join().unwrap();
+        .await;
+        let payload = result.unwrap();
         assert_eq!(payload["user"], Value::Null);
         assert_eq!(payload["billing"], Value::Null);
         let usage = Grok.parse(&payload).unwrap();
@@ -921,33 +896,18 @@ mod tests {
         assert_eq!(usage.plan, None);
 
         // /billing returns 503 while /user and /credits succeed -> plan still resolves from /user.
-        let (user_url, user_srv) = spawn_local_endpoint(
-            "/v1/user?include=subscription",
-            MockReply::ok(USER_TIER_JSON),
-        );
-        let (billing_url, billing_srv) =
-            spawn_local_endpoint("/v1/billing", MockReply::status(503, "unavailable"));
-        let (credits_url, credits_srv) = spawn_local_endpoint(
-            "/v1/billing?format=credits",
-            MockReply::ok(POST_RESET_CREDITS_JSON),
-        );
-        let payload = fetch_endpoints(
+        let (result, _, _) = run_local_fetch(
             &client,
-            "synthetic-token",
             Some("synthetic-user"),
             DEFAULT_CLIENT_VERSION,
-            GrokEndpoints {
-                user: &user_url,
-                billing: &billing_url,
-                credits: &credits_url,
-            },
-            Duration::from_secs(2),
+            (
+                MockReply::ok(USER_TIER_JSON),
+                MockReply::status(503, "unavailable"),
+                MockReply::ok(POST_RESET_CREDITS_JSON),
+            ),
         )
-        .await
-        .unwrap();
-        user_srv.join().unwrap();
-        billing_srv.join().unwrap();
-        credits_srv.join().unwrap();
+        .await;
+        let payload = result.unwrap();
         assert_eq!(payload["billing"], Value::Null);
         let usage = Grok.parse(&payload).unwrap();
         assert_eq!(usage.plan.as_deref(), Some("X Premium Plus"));
@@ -998,35 +958,20 @@ mod tests {
     #[tokio::test]
     async fn credits_endpoint_failure_is_propagated_not_hidden() {
         let client = local_client();
-        let (user_url, user_srv) = spawn_local_endpoint(
-            "/v1/user?include=subscription",
-            MockReply::ok(USER_TIER_JSON),
-        );
-        let (billing_url, billing_srv) =
-            spawn_local_endpoint("/v1/billing", MockReply::ok(LEGACY_ZERO_BILLING_JSON));
-        let (credits_url, credits_srv) = spawn_local_endpoint(
-            "/v1/billing?format=credits",
-            MockReply::status(500, "upstream failure"),
-        );
-        let err = fetch_endpoints(
+        let (result, urls, _) = run_local_fetch(
             &client,
-            "synthetic-token",
             None,
             DEFAULT_CLIENT_VERSION,
-            GrokEndpoints {
-                user: &user_url,
-                billing: &billing_url,
-                credits: &credits_url,
-            },
-            Duration::from_secs(2),
+            (
+                MockReply::ok(USER_TIER_JSON),
+                MockReply::ok(LEGACY_ZERO_BILLING_JSON),
+                MockReply::status(500, "upstream failure"),
+            ),
         )
-        .await
-        .unwrap_err();
-        user_srv.join().unwrap();
-        billing_srv.join().unwrap();
-        credits_srv.join().unwrap();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Error);
-        assert!(err.message.contains(&credits_url));
+        assert!(err.message.contains(&urls[2]));
         assert!(err.message.contains("HTTP 500"));
         assert!(!err.message.contains("no recognised quota meters"));
     }
@@ -1056,29 +1001,10 @@ mod tests {
                 MockReply::rate_limit("45"),
             ),
         ];
-        for (user_reply, billing_reply, credits_reply) in cases {
-            let (user_url, user_srv) =
-                spawn_local_endpoint("/v1/user?include=subscription", user_reply);
-            let (billing_url, billing_srv) = spawn_local_endpoint("/v1/billing", billing_reply);
-            let (credits_url, credits_srv) =
-                spawn_local_endpoint("/v1/billing?format=credits", credits_reply);
-            let err = fetch_endpoints(
-                &client,
-                "synthetic-token",
-                None,
-                DEFAULT_CLIENT_VERSION,
-                GrokEndpoints {
-                    user: &user_url,
-                    billing: &billing_url,
-                    credits: &credits_url,
-                },
-                Duration::from_secs(2),
-            )
-            .await
-            .unwrap_err();
-            user_srv.join().unwrap();
-            billing_srv.join().unwrap();
-            credits_srv.join().unwrap();
+        for replies in cases {
+            let (result, _, _) =
+                run_local_fetch(&client, None, DEFAULT_CLIENT_VERSION, replies).await;
+            let err = result.unwrap_err();
             assert_eq!(err.status, Status::Reconnect);
             assert!(err.message.contains("HTTP 401"));
             assert!(err.message.contains("Run `grok`"));
@@ -1090,47 +1016,34 @@ mod tests {
         let client = local_client();
         let cases = [
             (
-                MockReply::rate_limit("45"),
-                MockReply::ok(LEGACY_ZERO_BILLING_JSON),
-                MockReply::ok(POST_RESET_CREDITS_JSON),
+                (
+                    MockReply::rate_limit("45"),
+                    MockReply::ok(LEGACY_ZERO_BILLING_JSON),
+                    MockReply::ok(POST_RESET_CREDITS_JSON),
+                ),
                 45,
             ),
             (
-                MockReply::ok(USER_TIER_JSON),
-                MockReply::rate_limit("60"),
-                MockReply::status(500, "err"),
+                (
+                    MockReply::ok(USER_TIER_JSON),
+                    MockReply::rate_limit("60"),
+                    MockReply::status(500, "err"),
+                ),
                 60,
             ),
             (
-                MockReply::rate_limit("90"),
-                MockReply::rate_limit("30"),
-                MockReply::rate_limit("45"),
+                (
+                    MockReply::rate_limit("90"),
+                    MockReply::rate_limit("30"),
+                    MockReply::rate_limit("45"),
+                ),
                 90,
             ),
         ];
-        for (user_reply, billing_reply, credits_reply, expected_secs) in cases {
-            let (user_url, user_srv) =
-                spawn_local_endpoint("/v1/user?include=subscription", user_reply);
-            let (billing_url, billing_srv) = spawn_local_endpoint("/v1/billing", billing_reply);
-            let (credits_url, credits_srv) =
-                spawn_local_endpoint("/v1/billing?format=credits", credits_reply);
-            let err = fetch_endpoints(
-                &client,
-                "synthetic-token",
-                None,
-                DEFAULT_CLIENT_VERSION,
-                GrokEndpoints {
-                    user: &user_url,
-                    billing: &billing_url,
-                    credits: &credits_url,
-                },
-                Duration::from_secs(2),
-            )
-            .await
-            .unwrap_err();
-            user_srv.join().unwrap();
-            billing_srv.join().unwrap();
-            credits_srv.join().unwrap();
+        for (replies, expected_secs) in cases {
+            let (result, _, _) =
+                run_local_fetch(&client, None, DEFAULT_CLIENT_VERSION, replies).await;
+            let err = result.unwrap_err();
             assert_eq!(err.status, Status::Error);
             assert!(err.message.contains("HTTP 429"));
             assert_eq!(err.retry_after_secs, Some(expected_secs));
@@ -1208,36 +1121,20 @@ mod tests {
         for (path, expected_version) in [(&version_path, "1.0.99"), (&missing, "1.0.45")] {
             let resolved = client_version_from(path);
             assert_eq!(resolved, expected_version);
-            let (user_url, user_srv) = spawn_local_endpoint(
-                "/v1/user?include=subscription",
-                MockReply::ok(USER_TIER_JSON),
-            );
-            let (billing_url, billing_srv) =
-                spawn_local_endpoint("/v1/billing", MockReply::ok(LEGACY_ZERO_BILLING_JSON));
-            let (credits_url, credits_srv) = spawn_local_endpoint(
-                "/v1/billing?format=credits",
-                MockReply::ok(POST_RESET_CREDITS_JSON),
-            );
-            fetch_endpoints(
+            let (result, _, requests) = run_local_fetch(
                 &client,
-                "synthetic-token",
                 Some("synthetic-user"),
                 &resolved,
-                GrokEndpoints {
-                    user: &user_url,
-                    billing: &billing_url,
-                    credits: &credits_url,
-                },
-                Duration::from_secs(2),
+                (
+                    MockReply::ok(USER_TIER_JSON),
+                    MockReply::ok(LEGACY_ZERO_BILLING_JSON),
+                    MockReply::ok(POST_RESET_CREDITS_JSON),
+                ),
             )
-            .await
-            .unwrap();
+            .await;
+            result.unwrap();
             let expected_header = format!("x-grok-client-version: {expected_version}");
-            for request in [
-                user_srv.join().unwrap(),
-                billing_srv.join().unwrap(),
-                credits_srv.join().unwrap(),
-            ] {
+            for request in requests {
                 let lower = request.to_ascii_lowercase();
                 assert!(lower.contains(&expected_header), "{request}");
                 assert!(
