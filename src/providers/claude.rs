@@ -228,11 +228,14 @@ fn limit_scope(scope: Option<&Value>) -> Option<&str> {
 
 fn limit_label(entry: &Value) -> Option<String> {
     let kind = clean_text(entry.get("kind"));
-    let scope = limit_scope(entry.get("scope"));
+    let scope = limit_scope(entry.get("scope"))
+        .map(format_scope)
+        .filter(|text| !text.is_empty());
+    let scope = scope.as_deref();
     let name = clean_text(entry.get("name"));
 
-    if let Some(kind) = kind {
-        let key = normalize_key(kind);
+    for field in [kind, name].into_iter().flatten() {
+        let key = normalize_key(field);
         if matches!(key.as_str(), "extra_usage" | "spend") {
             return None;
         }
@@ -242,66 +245,49 @@ fn limit_label(entry: &Value) -> Option<String> {
     }
 
     if let Some(name) = name {
-        let key = normalize_key(name);
-        if matches!(key.as_str(), "extra_usage" | "spend") {
-            return None;
-        }
-        if let Some(label) = canonical_kind_label(&key, scope) {
-            return Some(label);
-        }
-        return Some(match scope {
-            Some(scope) => {
-                let formatted = format_scope(scope);
-                if name
-                    .to_ascii_lowercase()
-                    .contains(&formatted.to_ascii_lowercase())
-                {
-                    name.to_owned()
-                } else {
-                    format!("{formatted} {name}")
-                }
-            }
-            None => name.to_owned(),
-        });
+        return Some(with_scope(scope, name, false));
     }
-
-    match (scope, kind) {
-        (Some(scope), Some(kind)) => {
-            let formatted_scope = format_scope(scope);
-            let humanized_kind = humanize_words(kind);
-            if humanized_kind
-                .to_ascii_lowercase()
-                .contains(&formatted_scope.to_ascii_lowercase())
-            {
-                Some(capitalize_first(&humanized_kind))
-            } else {
-                Some(format!("{formatted_scope} {humanized_kind}"))
-            }
+    if let Some(kind) = kind {
+        let humanized = humanize_words(kind);
+        if !humanized.is_empty() {
+            return Some(with_scope(scope, &humanized, true));
         }
-        (None, Some(kind)) => Some(capitalize_first(&humanize_words(kind))),
-        (Some(scope), None) => Some(format_scope(scope)),
-        (None, None) => None,
+    }
+    scope.map(str::to_owned)
+}
+
+fn with_scope(scope: Option<&str>, text: &str, capitalize_unprefixed: bool) -> String {
+    match scope {
+        Some(scope)
+            if !text
+                .to_ascii_lowercase()
+                .contains(&scope.to_ascii_lowercase()) =>
+        {
+            format!("{scope} {text}")
+        }
+        _ if capitalize_unprefixed => capitalize_first(text),
+        _ => text.to_owned(),
     }
 }
 
 fn canonical_kind_label(key: &str, scope: Option<&str>) -> Option<String> {
-    let scoped_or = |default_scope: &str, cadence: &str| match scope {
-        Some(scope) => format!("{} {cadence}", format_scope(scope)),
-        None => format!("{default_scope} {cadence}"),
-    };
     match key {
-        "five_hour" | "5h" | "5_hour" | "5_hours" | "session" | "session_5h" => Some(match scope {
-            Some(scope) => format!("{} 5 hours", format_scope(scope)),
-            None => "5 hours".into(),
-        }),
-        "seven_day" | "7d" | "7_day" | "7_days" | "weekly" => Some(match scope {
-            Some(scope) => format!("{} weekly", format_scope(scope)),
-            None => "Weekly".into(),
-        }),
-        "seven_day_opus" | "opus_weekly" => Some(scoped_or("Opus", "weekly")),
-        "seven_day_sonnet" | "sonnet_weekly" => Some(scoped_or("Sonnet", "weekly")),
-        "seven_day_cowork" | "cowork_weekly" => Some(scoped_or("Cowork", "weekly")),
-        "seven_day_oauth_apps" | "oauth_apps_weekly" => Some(scoped_or("OAuth apps", "weekly")),
+        "five_hour" | "5h" | "5_hour" | "5_hours" | "session" | "session_5h" => {
+            Some(scope.map_or_else(|| "5 hours".into(), |scope| format!("{scope} 5 hours")))
+        }
+        "seven_day" | "7d" | "7_day" | "7_days" | "weekly" => {
+            Some(scope.map_or_else(|| "Weekly".into(), |scope| format!("{scope} weekly")))
+        }
+        "seven_day_opus" | "opus_weekly" => Some(format!("{} weekly", scope.unwrap_or("Opus"))),
+        "seven_day_sonnet" | "sonnet_weekly" => {
+            Some(format!("{} weekly", scope.unwrap_or("Sonnet")))
+        }
+        "seven_day_cowork" | "cowork_weekly" => {
+            Some(format!("{} weekly", scope.unwrap_or("Cowork")))
+        }
+        "seven_day_oauth_apps" | "oauth_apps_weekly" => {
+            Some(format!("{} weekly", scope.unwrap_or("OAuth apps")))
+        }
         _ => None,
     }
 }
@@ -615,6 +601,7 @@ mod tests {
                     "scope": {"display_name": "<redacted>"},
                     "percent": 10
                 },
+                {"kind": "___", "scope": "___", "percent": 10},
                 null
             ]
         });
