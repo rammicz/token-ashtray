@@ -16,7 +16,6 @@ const BOT: Descriptor = Descriptor {
     link: "https://cursor.com/dashboard/usage",
     login: "Open Cursor and sign in to your account.",
 };
-const USAGE: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 const PLAN: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetPlanInfo";
 const SAND: [&str; 2] = [
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus",
@@ -38,7 +37,7 @@ struct UsageEndpoint<'a> {
 const USAGE_ENDPOINTS: [UsageEndpoint<'static>; 4] = [
     UsageEndpoint {
         method: UsageMethod::PostJson,
-        url: USAGE,
+        url: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage",
     },
     UsageEndpoint {
         method: UsageMethod::PostJson,
@@ -344,6 +343,11 @@ fn cursor_meters(value: &Value) -> Vec<Meter> {
     meters
 }
 const SAND_ENVELOPES: [&str; 4] = ["usageStatus", "sandUsageStatus", "status", "config"];
+fn sand_envelopes(value: &Value) -> impl Iterator<Item = &Value> {
+    SAND_ENVELOPES
+        .iter()
+        .filter_map(|key| value.get(key).filter(|nested| nested.is_object()))
+}
 fn has_sand_suppression_flag(node: &Value) -> bool {
     [
         "usesPooledEnterpriseAllowance",
@@ -355,27 +359,17 @@ fn has_sand_suppression_flag(node: &Value) -> bool {
     .any(|key| node.get(key).and_then(Value::as_bool) == Some(true))
 }
 fn sand_suppressed(value: &Value) -> bool {
-    has_sand_suppression_flag(value)
-        || SAND_ENVELOPES
-            .iter()
-            .filter_map(|key| value.get(key).filter(|nested| nested.is_object()))
-            .any(has_sand_suppression_flag)
+    has_sand_suppression_flag(value) || sand_envelopes(value).any(has_sand_suppression_flag)
 }
 fn sand_meters(value: &Value) -> Vec<Meter> {
     if sand_suppressed(value) {
         return Vec::new();
     }
-    for target in SAND_ENVELOPES
-        .iter()
-        .filter_map(|key| value.get(key).filter(|nested| nested.is_object()))
+    sand_envelopes(value)
         .chain(std::iter::once(value))
-    {
-        let meters = sand_meters_from(target, value);
-        if !meters.is_empty() {
-            return meters;
-        }
-    }
-    Vec::new()
+        .map(|target| sand_meters_from(target, value))
+        .find(|meters| !meters.is_empty())
+        .unwrap_or_default()
 }
 fn sand_meters_from(target: &Value, outer: &Value) -> Vec<Meter> {
     [
@@ -484,105 +478,113 @@ mod tests {
             .into_owned();
         (line, headers, body)
     }
+    struct MockHttpServer {
+        origin: String,
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+        handle: std::thread::JoinHandle<()>,
+    }
+    impl MockHttpServer {
+        fn start<F>(handler: F) -> Self
+        where
+            F: Fn(&str, &str) -> (u16, &'static str) + Send + 'static,
+        {
+            use std::{
+                io::Write,
+                net::TcpListener,
+                sync::{
+                    Arc, Mutex,
+                    atomic::{AtomicBool, Ordering},
+                },
+                time::Duration,
+            };
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            listener.set_nonblocking(true).unwrap();
+            let stopped = Arc::new(AtomicBool::new(false));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let server_stopped = stopped.clone();
+            let server_requests = requests.clone();
+            let handle = std::thread::spawn(move || {
+                while !server_stopped.load(Ordering::Acquire) {
+                    let Ok((mut socket, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(2));
+                        continue;
+                    };
+                    let (line, headers, body) = read_http_request(&mut socket);
+                    let (status, response_body) = handler(&line, &headers);
+                    server_requests.lock().unwrap().push((line, body));
+                    write!(
+                        socket,
+                        "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 45\r\nConnection: close\r\n\r\n{response_body}",
+                        response_body.len()
+                    )
+                    .unwrap();
+                }
+            });
+            Self {
+                origin,
+                stopped,
+                requests,
+                handle,
+            }
+        }
+        fn finish(self) -> Vec<(String, String)> {
+            self.stopped
+                .store(true, std::sync::atomic::Ordering::Release);
+            self.handle.join().unwrap();
+            self.requests.lock().unwrap().clone()
+        }
+    }
     async fn sand_fixture(
         dashboard: (u16, &'static str),
         sandbox: (u16, &'static str),
     ) -> (Result<Value>, Vec<(String, String)>) {
-        use std::{
-            io::Write,
-            net::TcpListener,
-            sync::{
-                Arc, Mutex,
-                atomic::{AtomicBool, Ordering},
-            },
-            time::Duration,
-        };
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        listener.set_nonblocking(true).unwrap();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let server_stopped = stopped.clone();
-        let server_requests = requests.clone();
-        let server = std::thread::spawn(move || {
-            while !server_stopped.load(Ordering::Acquire) {
-                let Ok((mut socket, _)) = listener.accept() else {
-                    std::thread::sleep(Duration::from_millis(2));
-                    continue;
-                };
-                let (line, _, body) = read_http_request(&mut socket);
-                let (status, response_body) = if line.contains("/sandbox ") {
-                    sandbox
-                } else {
-                    dashboard
-                };
-                server_requests.lock().unwrap().push((line, body));
-                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 45\r\nConnection: close\r\n\r\n{response_body}", response_body.len()).unwrap();
+        let server = MockHttpServer::start(move |line, _| {
+            if line.contains("/sandbox ") {
+                sandbox
+            } else {
+                dashboard
             }
         });
         let client = Client::builder().no_proxy().build().unwrap();
         let result = fetch_sand(
             &client,
             "synthetic-test-token",
-            &[&format!("{origin}/dashboard"), &format!("{origin}/sandbox")],
+            &[
+                &format!("{}/dashboard", server.origin),
+                &format!("{}/sandbox", server.origin),
+            ],
         )
         .await;
-        stopped.store(true, Ordering::Release);
-        server.join().unwrap();
-        let captured = requests.lock().unwrap().clone();
-        (result, captured)
+        (result, server.finish())
     }
     async fn usage_fixture(
         primary: (u16, &'static str),
         fallback_post: (u16, &'static str),
         fallback_get: (u16, &'static str),
     ) -> (Result<Value>, Vec<(String, String)>) {
-        use std::{
-            io::Write,
-            net::TcpListener,
-            sync::{
-                Arc, Mutex,
-                atomic::{AtomicBool, Ordering},
-            },
-            time::Duration,
-        };
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        listener.set_nonblocking(true).unwrap();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let server_stopped = stopped.clone();
-        let server_requests = requests.clone();
-        let server = std::thread::spawn(move || {
-            while !server_stopped.load(Ordering::Acquire) {
-                let Ok((mut socket, _)) = listener.accept() else {
-                    std::thread::sleep(Duration::from_millis(2));
-                    continue;
-                };
-                let (line, headers, body) = read_http_request(&mut socket);
-                assert!(
-                    headers.lines().any(|header| {
-                        header
-                            .trim_end_matches('\r')
-                            .eq_ignore_ascii_case("accept: application/json")
-                    }),
-                    "missing Accept: application/json header: {headers}"
-                );
-                let (status, response_body) = if line.contains("/primary ") {
-                    primary
-                } else if line.contains("/fallback-post ") {
-                    fallback_post
-                } else {
-                    fallback_get
-                };
-                server_requests.lock().unwrap().push((line, body));
-                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 45\r\nConnection: close\r\n\r\n{response_body}", response_body.len()).unwrap();
+        let server = MockHttpServer::start(move |line, headers| {
+            assert!(
+                headers.lines().any(|header| {
+                    header
+                        .trim_end_matches('\r')
+                        .eq_ignore_ascii_case("accept: application/json")
+                }),
+                "missing Accept: application/json header: {headers}"
+            );
+            if line.contains("/primary ") {
+                primary
+            } else if line.contains("/fallback-post ") {
+                fallback_post
+            } else {
+                fallback_get
             }
         });
         let client = Client::builder().no_proxy().build().unwrap();
-        let primary_url = format!("{origin}/primary");
-        let fallback_post_url = format!("{origin}/fallback-post");
-        let fallback_get_url = format!("{origin}/fallback-get");
+        let primary_url = format!("{}/primary", server.origin);
+        let fallback_post_url = format!("{}/fallback-post", server.origin);
+        let fallback_get_url = format!("{}/fallback-get", server.origin);
         let endpoints = [
             UsageEndpoint {
                 method: UsageMethod::PostJson,
@@ -598,10 +600,7 @@ mod tests {
             },
         ];
         let result = fetch_usage(&client, "synthetic-test-token", &endpoints).await;
-        stopped.store(true, Ordering::Release);
-        server.join().unwrap();
-        let captured = requests.lock().unwrap().clone();
-        (result, captured)
+        (result, server.finish())
     }
     #[tokio::test]
     async fn sand_auth_failure_is_terminal_even_if_sandbox_would_error() {
@@ -815,50 +814,39 @@ mod tests {
         const KNOWN: &str = r#"{"planUsage":{"totalPercentUsed":10}}"#;
 
         for status in [401, 429] {
-            // Terminal on primary route.
-            let (result, requests) =
-                usage_fixture((status, "{}"), (200, KNOWN), (200, KNOWN)).await;
-            let error = result.unwrap_err();
-            assert_eq!(
-                requests,
-                vec![("POST /primary HTTP/1.1".into(), "{}".into())],
-                "primary HTTP {status} must not issue fallback requests"
-            );
-            assert!(error.message.contains(&format!("HTTP {status}")));
-            assert_eq!(
-                error.status,
-                if status == 401 {
-                    Status::Reconnect
-                } else {
-                    Status::Error
+            let cases = [
+                (
+                    "primary",
+                    usage_fixture((status, "{}"), (200, KNOWN), (200, KNOWN)).await,
+                    vec![("POST /primary HTTP/1.1".into(), "{}".into())],
+                ),
+                (
+                    "fallback",
+                    usage_fixture((404, "{}"), (status, "{}"), (200, KNOWN)).await,
+                    vec![
+                        ("POST /primary HTTP/1.1".into(), "{}".into()),
+                        ("POST /fallback-post HTTP/1.1".into(), "{}".into()),
+                    ],
+                ),
+            ];
+            for (stage, (result, requests), expected_requests) in cases {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    requests, expected_requests,
+                    "{stage} HTTP {status} must not issue subsequent requests"
+                );
+                assert!(error.message.contains(&format!("HTTP {status}")));
+                assert_eq!(
+                    error.status,
+                    if status == 401 {
+                        Status::Reconnect
+                    } else {
+                        Status::Error
+                    }
+                );
+                if status == 429 {
+                    assert_eq!(error.retry_after_secs, Some(45));
                 }
-            );
-            if status == 429 {
-                assert_eq!(error.retry_after_secs, Some(45));
-            }
-
-            // Terminal on intermediate fallback route too.
-            let (result, requests) = usage_fixture((404, "{}"), (status, "{}"), (200, KNOWN)).await;
-            let error = result.unwrap_err();
-            assert_eq!(
-                requests,
-                vec![
-                    ("POST /primary HTTP/1.1".into(), "{}".into()),
-                    ("POST /fallback-post HTTP/1.1".into(), "{}".into()),
-                ],
-                "fallback HTTP {status} must not issue subsequent requests"
-            );
-            assert!(error.message.contains(&format!("HTTP {status}")));
-            assert_eq!(
-                error.status,
-                if status == 401 {
-                    Status::Reconnect
-                } else {
-                    Status::Error
-                }
-            );
-            if status == 429 {
-                assert_eq!(error.retry_after_secs, Some(45));
             }
         }
     }
