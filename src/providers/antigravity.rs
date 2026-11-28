@@ -371,10 +371,6 @@ fn parse_version(bytes: &[u8]) -> Option<CliVersion> {
         return None;
     }
     let line = line.trim_matches([' ', '\t']);
-    if line.is_empty() {
-        return None;
-    }
-
     let head = strip_trailing_parenthetical(line)?;
     let mut tokens = head.split([' ', '\t']).filter(|token| !token.is_empty());
     let version_token = match (tokens.next(), tokens.next(), tokens.next()) {
@@ -415,10 +411,7 @@ fn strip_trailing_parenthetical(line: &str) -> Option<&str> {
         return Some(line);
     };
     let (prefix, body) = before_close.split_once('(')?;
-    if !prefix.ends_with([' ', '\t'])
-        || body.contains(['(', ')'])
-        || body.trim_matches([' ', '\t']).is_empty()
-    {
+    if !prefix.ends_with([' ', '\t']) || body.contains(['(', ')']) || body.trim().is_empty() {
         return None;
     }
     Some(prefix.trim_end_matches([' ', '\t']))
@@ -448,10 +441,8 @@ fn parse_semver_component(part: &str) -> Option<u64> {
 }
 
 fn is_valid_semver_identifiers(tag: &str) -> bool {
-    !tag.is_empty()
-        && tag
-            .split('.')
-            .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    tag.split('.')
+        .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 #[cfg(test)]
@@ -661,6 +652,7 @@ mod tests {
             b"1.6.0-()\n",
             b"1.6.0 ()\n",
             b"1.6.0 (   )\n",
+            "1.6.0 (\u{00A0})\n".as_bytes(),
             b"1.6.0 (a (b))\n",
             b"1.6.0 (a (b)\n",
             b"1.6.0 (a) (b)\n",
