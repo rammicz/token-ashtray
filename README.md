@@ -47,9 +47,11 @@ provider logins, with different sources for different services:
 - **Antigravity:** Antigravity CLI 1.1.11+ with a completed sign-in. The app invokes
   its read-only quota command; the CLI owns authentication and Token Ashtray
   does not read its OS credential store.
-- **Mistral Vibe:** the `MISTRAL_API_KEY` environment value, or the same key in
-  `~/.vibe/.env` (create it with `vibe --setup`). The app does not read the OS
-  keyring or the CLI's browser sign-in session.
+- **Mistral Vibe:** existing `MISTRAL_API_KEY` environment / `~/.vibe/.env` key,
+  or the installed `mistral-vibe` CLI (`vibe-app-server`) with its existing
+  sign-in (`vibe --setup`). As with Antigravity, the CLI owns keyring/OIDC
+  authentication inside an isolated temporary `VIBE_HOME` and Token Ashtray
+  never reads the OS credential store directly.
 
 Missing logins show provider-specific reconnect guidance. Request failures stay
 local to that provider. Non-auth failures can retain readings with their

@@ -40,5 +40,11 @@
     "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/google-antigravity/default.svg",
     "sha256": "4ad13823e4020b2b32fb2d78d0fbc28fca07b37c509dbf1d0709a918afa3a24b",
     "license": "MIT"
+  },
+  {
+    "provider": "vibe",
+    "source": "https://raw.githubusercontent.com/glincker/thesvg/9e7c56e6602bba6f71b32b045fd6133f9e9b40d4/public/icons/mistral/color.svg",
+    "sha256": "a21838f4a3714b9f537bd849de4848dca712778517bfc4177621cc58b3050006",
+    "license": "MIT"
   }
 ]

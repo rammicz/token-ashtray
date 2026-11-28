@@ -17,8 +17,12 @@ Grok uses its CLI sign-in, and Kimi uses `kimi login`. Cursor and Grok Bot share
 Cursor desktop sign-in and read its SQLite storage without modifying it.
 Copilot uses `copilot login` or an editor sign-in; already-set
 `GITHUB_COPILOT_API_TOKEN` and then `GITHUB_TOKEN` take priority over its files.
-Mistral Vibe has no login file to read: it uses the `MISTRAL_API_KEY` environment
-value, or the same key in `~/.vibe/.env` (`vibe --setup` writes it); see [§10](#10-mistral-vibe--live-endpoint-evidence-parser-only-account-evidence).
+Mistral Vibe uses `MISTRAL_API_KEY` from the environment or `~/.vibe/.env` when
+present; otherwise it queries the installed first-party `vibe-app-server` over
+stdio JSON-RPC using an ephemeral session inside an isolated temporary
+`VIBE_HOME`, so the CLI retains ownership of its OS-keyring / OIDC login
+(`vibe --setup`) without Token Ashtray ever reading the OS credential store; see
+[§10](#10-mistral-vibe--live-linux-via-vibe-app-server).
 An app opened from a desktop launcher may inherit different environment values
 from a terminal. See the provider sections below for exact paths and precedence.
 
@@ -55,7 +59,7 @@ Automatic updates are off by default; [G7](REQUIREMENTS.md#g7-network-scope-and-
 lists their requests. No release is signed yet, so current builds send no
 update request; use the install guides' manual update steps.
 
-Live Linux account evidence exists for Claude, Codex and Grok; Antigravity has
+Live Linux account evidence exists for Claude, Codex, Grok and Mistral Vibe; Antigravity has
 historical Linux/native Windows samples. Cursor and Grok Bot have one read-only
 native Windows web comparison on a single account ([§5](#5-grok-bot-via-cursor)).
 Copilot still needs live-account validation for release claims, and Kimi's captured-account
@@ -591,47 +595,64 @@ onboarding flags and a project identifier, not readable login credentials.
 
 ---
 
-## 10. Mistral Vibe — live endpoint evidence, parser-only account evidence
+## 10. Mistral Vibe — live Linux via `vibe-app-server`
 
-### Protocol (from the first-party CLI source, 2026-11-24)
+### Protocol (from the first-party CLI source, 2026-11-24 / 2026-11-26)
 
-The installed `mistral-vibe` Python package is the protocol reference:
+The installed `mistral-vibe` Python package (verified on 3.1.5) is the protocol reference:
 
-- **Credential.** `vibe/utils/api_keys.py::resolve_api_key_with_origin("MISTRAL_API_KEY")`
-  resolves, in order: the process environment, then the OS keyring (service
-  `ai.mistral.vibe`, legacy `vibe`), with `~/.vibe/.env` (dotenv, `$VIBE_HOME/.env`
-  overridable) loaded into the environment at startup by
-  `load_dotenv_values`. A CLI browser sign-in is an OIDC marker session, not an
-  API key. Token-ashtray reads only the **environment variable `MISTRAL_API_KEY`**
-  and the **dotenv file `$VIBE_HOME/.env` / `~/.vibe/.env`** (read-only, parsed in
-  place). The keyring and the OIDC session are not read; those users get a
-  Reconnect card naming `vibe --setup`. API keys do not expire: **no refresh, no
-  writes ever.** Requests carry `Authorization: Bearer <key>`.
-- **Endpoints**, both `GET` on the configured platform base (default
-  `https://api.mistral.ai/v1`), per `vibe/app_server/_billing.py`:
+- **Credential & authentication boundary.** `vibe/setup/auth/api_key_persistence.py`
+  stores `MISTRAL_API_KEY` in the OS keyring (`ai.mistral.vibe`, legacy `vibe`)
+  whenever a keyring backend is available, and removes any plaintext copy from
+  `~/.vibe/.env` (falling back to `$VIBE_HOME/.env` / `~/.vibe/.env` only on
+  `KeyringError`). Browser sign-in uses OIDC tokens in the OS keyring
+  (`ai.mistral.vibe.oidc`). Token Ashtray **never reads the OS keyring
+  directly** ([REQUIREMENTS §3](REQUIREMENTS.md#3-non-goals)):
+  1. **Direct HTTP path** (when `MISTRAL_API_KEY` is set in the environment or
+     readable from `$VIBE_HOME/.env` / `~/.vibe/.env`, read-only, no refresh,
+     no writes): sends `Authorization: Bearer <key>` to
+     `GET https://api.mistral.ai/v1/billing/subscription` and
+     `GET https://api.mistral.ai/v1/billing/budget` (per `vibe/app_server/_billing.py`).
+  2. **CLI-owned-auth path** (default for desktop installs whose login lives in
+     the OS keyring or OIDC): discovers the installed first-party
+     `vibe-app-server` (`~/.local/bin`, `PATH`, or sibling of the resolved `vibe`
+     launcher) and runs a bounded, read-only newline-delimited JSON-RPC 2.0
+     sequence over stdio:
+     `initialize` → `initialized` → `session/start` (`kind: "ephemeral"`) →
+     `account/read` → `session/stop`.
+     The child runs with `VIBE_HOME` and `cwd` set to a fresh temporary
+     directory containing only `config.toml` (`enable_telemetry = false`),
+     excluding user MCP servers, plugins, hooks and `~/.vibe` files while
+     leaving `~/.vibe` untouched and allowing `vibe-app-server` to authenticate
+     through its own OS-keyring login with zero model turns. Execution is
+     bounded (18-second timeout, 512 KiB stdout cap, `kill_on_drop`,
+     `CREATE_NO_WINDOW` on Windows, clean reap before temp-dir cleanup).
+- **Direct HTTP endpoints** (`vibe/app_server/_billing.py`):
   - `billing/subscription` → `{"plan_name": string, "vibe_payg_enabled": bool|null}`
   - `billing/budget` → `{"vibe_budget": {"usage_percentage": number, "initial_budget":
     number, "reset_at": string|null, "payg_enabled": bool|null}} | null`
-- **Semantics.** `usage_percentage` is a 0–100 percentage and may exceed 100 with
-  pay-as-you-go ("usage past 100% is billed instead of paused",
-  `app_server/models.py::AccountBudgetView`); the meter clamps at 100.
-  `reset_at` is an RFC3339 string. `initial_budget` is the monthly allowance
-  amount; its currency is not stated, so it is not shown as a price.
-  A **403** on `billing/budget` means the member lacks `see_org_inference_usage`
-  and a **404** a platform without billing: both mean "no budget", never an
-  error. **401** on either endpoint means reconnect. The CLI treats every
-  billing failure as optional; the app keeps the same fail-soft rule and shows
-  the subscription plan alone when no budget is served.
-- Both endpoints were probed live on 2026-11-24 without a key; each answered
-  HTTP 401 `{"detail":"Invalid API Key"}`, confirming existence and the
-  auth requirement. The CLI's local `~/.vibe/whoami_cache.json` records the
-  account's plan type, plan name and whether it has a paid Vibe entitlement;
-  accounts without that entitlement may receive no `vibe_budget` at all. Live authenticated
-  account evidence for the budget payload is still owed; parser tests use
-  synthetic payloads and are not account captures. On 2026-11-24
-  `provider_probe vibe` on a machine with no `MISTRAL_API_KEY` (browser sign-in
-  only, keyring not read by design) correctly returned a Reconnect card naming
-  `vibe --setup`.
+- **`account/read` response shape** (`vibe/app_server/models.py::AccountView`):
+  - `status`: `"ready"` | `"missing_key"` (`Reconnect`) | `"unauthorized"` (`Reconnect`) | `"unavailable"` (`Error`)
+  - `plan`: `{"kind": "chat"|"api"|"mistral_code", "name": string, "title": string|null}`
+  - `budget`: `{"usagePercentage": number, "resetAt": string|null, "paygEnabled": bool} | null`
+- **Semantics.** `usage_percentage` / `usagePercentage` is a 0–100 percentage
+  and may exceed 100 under pay-as-you-go ("usage past 100% is billed instead of
+  paused", `app_server/models.py::AccountBudgetView`); the meter clamps at 100.
+  `reset_at` / `resetAt` is an RFC3339 string. `initial_budget` is the monthly
+  allowance amount; `<= 0` suppresses the meter (matching `vibe/app_server/_account.py`)
+  and its currency is unstated so no price is shown.
+  A **403** on `billing/budget` (missing `see_org_inference_usage`) or **404**
+  (platform without billing) means "no budget", never an error; **401** means
+  `Reconnect`. When no budget is served, the plan alone is shown.
+- **Live Linux check (2026-11-26).** One owner-authorized, read-only poll
+  through `provider_probe vibe` on Linux with `vibe` 3.1.5 signed in via the
+  OS keyring (no `MISTRAL_API_KEY` env var and no `~/.vibe/.env`) discovered
+  `vibe-app-server`, completed the isolated `account/read` handshake in ~2.8 s
+  with exit 0, and returned a `Live` card with plan `Pro`, meter
+  `Vibe Code allowance` and an RFC 3339 UTC `resetAt`. The synthetic structural
+  fixture `tests/fixtures/vibe-account.json` mirrors the observed `AccountView`
+  shape without retaining account values. Native Windows validation of
+  `vibe-app-server.exe` remains deferred to a Windows machine.
 
 ---
 

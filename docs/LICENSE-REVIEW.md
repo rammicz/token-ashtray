@@ -118,7 +118,7 @@ marks of their owners; inclusion does not imply endorsement.
 
 Assets are sourced from [theSVG](https://github.com/glincker/thesvg) at revision
 `9e7c56e6602bba6f71b32b045fd6133f9e9b40d4`. The upstream per-icon registry identifies Claude and Cursor
-as CC0-1.0; Codex, Grok, GitHub Copilot, Kimi and Antigravity as MIT.
+as CC0-1.0; Codex, Grok, GitHub Copilot, Kimi, Antigravity and Mistral (Vibe) as MIT.
 See `SOURCES.json` for pinned source URLs and checksums. The source SVG geometry
 is preserved; currentColor follows the board foreground and rendering creates
 96×96 RGBA textures. No logo is downloaded at runtime.

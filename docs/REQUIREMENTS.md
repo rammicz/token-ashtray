@@ -80,6 +80,13 @@ for completeness".
   CLI's documented read-only JSON quota command using its existing login;
   the app does not access its credential store. Require CLI 1.1.11 or newer,
   bounded execution, and no model turns or interactive authentication.
+  The same CLI-owned-auth boundary applies to Mistral Vibe: when no
+  `MISTRAL_API_KEY` environment value or `~/.vibe/.env` file is present, the
+  app may invoke the installed first-party `vibe-app-server` over stdio
+  JSON-RPC (`initialize` → ephemeral `session/start` → `account/read` →
+  `session/stop`) inside an isolated temporary `VIBE_HOME` with telemetry
+  disabled, bounded execution, and zero model turns; the app never reads the
+  OS keyring directly.
 - **No browser automation.** No Playwright, Puppeteer, CDP, or bookmarklets.
 - **No user-supplied API keys.** If a provider cannot be read from an existing
   CLI login, that provider is simply not supported.

@@ -84,3 +84,11 @@ under `_plan_info`), using the existing Cursor desktop sign-in. Only key names,
 nesting and value types were recorded. Every value is synthetic, including the
 plan, Auto and API percentages, the 13-digit millisecond cycle timestamps and
 the model names. See DATA-SOURCES §4.
+
+Mistral Vibe `vibe-account.json`: synthetic values in the `account/read`
+`AccountView` structure observed on 2026-11-26 from one owner-authorized,
+read-only `vibe-app-server` (3.1.5) poll on Linux using an isolated temporary
+`VIBE_HOME` with `enable_telemetry = false`, an ephemeral session, and the
+CLI's existing OS-keyring login. `apiKey` is omitted (`null`), and the plan,
+usage percentage and reset timestamp are synthetic placeholders. See
+DATA-SOURCES §10.

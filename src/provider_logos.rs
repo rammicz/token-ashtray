@@ -3,8 +3,8 @@ use eframe::egui::{self, Color32, ColorImage, Id, Rect, TextureHandle, TextureOp
 
 const SIZE: usize = 96;
 
-pub fn paint_provider_logo(ui: &mut Ui, provider_id: &str, rect: Rect) {
-    let asset = match provider_id {
+fn logo_asset(provider_id: &str) -> Option<(&'static str, &'static [u8])> {
+    match provider_id {
         "claude" => Some((
             "claude",
             include_bytes!("../assets/providers/claude.rgba").as_slice(),
@@ -33,8 +33,16 @@ pub fn paint_provider_logo(ui: &mut Ui, provider_id: &str, rect: Rect) {
             "antigravity",
             include_bytes!("../assets/providers/antigravity.rgba").as_slice(),
         )),
+        "vibe" => Some((
+            "vibe",
+            include_bytes!("../assets/providers/vibe.rgba").as_slice(),
+        )),
         _ => None,
-    };
+    }
+}
+
+pub fn paint_provider_logo(ui: &mut Ui, provider_id: &str, rect: Rect) {
+    let asset = logo_asset(provider_id);
     let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     painter.rect_filled(rect, 9.0, Color32::from_rgb(8, 13, 22));
     painter.rect_stroke(
@@ -66,5 +74,24 @@ pub fn paint_provider_logo(ui: &mut Ui, provider_id: &str, rect: Rect) {
         );
     } else {
         painter.circle_stroke(rect.center(), rect.width() * 0.24, (1.5, Color32::GRAY));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_registered_provider_has_a_96px_rgba_logo_asset() {
+        let expected_bytes = SIZE * SIZE * 4;
+        for provider in token_ashtray::providers::all() {
+            let id = provider.descriptor().id;
+            let (name, bytes) = logo_asset(id)
+                .unwrap_or_else(|| panic!("provider {id} is missing an embedded logo"));
+            assert!(!name.is_empty());
+            assert_eq!(bytes.len(), expected_bytes, "provider {id} RGBA size");
+        }
+        assert!(logo_asset("vibe").is_some());
+        assert!(logo_asset("unknown-provider").is_none());
     }
 }
