@@ -1,6 +1,7 @@
 use super::*;
+use crate::model::{percent100, timestamp};
 use serde_json::json;
-use std::io::Write;
+use std::{collections::HashSet, io::Write};
 pub struct Claude;
 const D: Descriptor = Descriptor {
     id: "claude",
@@ -148,16 +149,30 @@ impl Provider for Claude {
         fetch_at(client, credentials, USAGE, PROFILE, REFRESH, false).await
     }
     fn parse(&self, payload: &Value) -> Result<Usage> {
-        let meters = [
+        let mut meters = Vec::new();
+        let mut seen = HashSet::new();
+        for (key, label) in [
             ("five_hour", "5 hours"),
             ("seven_day", "Weekly"),
             ("seven_day_opus", "Opus weekly"),
             ("seven_day_sonnet", "Sonnet weekly"),
             ("seven_day_oauth_apps", "OAuth apps weekly"),
-        ]
-        .into_iter()
-        .filter_map(|(key, label)| quota_meter(label, &payload[key]))
-        .collect::<Vec<_>>();
+            ("seven_day_cowork", "Cowork weekly"),
+        ] {
+            if let Some(meter) = quota_meter(label, &payload[key]) {
+                seen.insert(meter.label.to_ascii_lowercase());
+                meters.push(meter);
+            }
+        }
+        if let Some(limits) = payload.get("limits").and_then(Value::as_array) {
+            for entry in limits {
+                if let Some(meter) = limit_meter(entry)
+                    && seen.insert(meter.label.to_ascii_lowercase())
+                {
+                    meters.push(meter);
+                }
+            }
+        }
         if meters.is_empty() {
             return Err(D.invalid());
         }
@@ -166,6 +181,169 @@ impl Provider for Claude {
             plan: string_at(payload, &["_plan"]),
             ..Default::default()
         })
+    }
+}
+
+fn limit_meter(entry: &Value) -> Option<Meter> {
+    let used_percent = entry
+        .get("percent")
+        .filter(|value| !value.is_null())
+        .or_else(|| entry.get("utilization"))
+        .and_then(percent100)?;
+    let label = limit_label(entry)?;
+    let resets_at = ["resets_at", "reset_at"]
+        .into_iter()
+        .find_map(|key| entry.get(key).and_then(timestamp));
+    Some(Meter {
+        label,
+        used_percent,
+        resets_at,
+    })
+}
+
+fn clean_text(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty() && !text.eq_ignore_ascii_case("<redacted>"))
+}
+
+fn limit_scope(scope: Option<&Value>) -> Option<&str> {
+    let scope = scope?;
+    if let Some(direct) = clean_text(Some(scope)) {
+        return Some(direct);
+    }
+    let model = scope.get("model");
+    [
+        model.and_then(|m| m.get("display_name")),
+        scope.get("display_name"),
+        model.and_then(|m| m.get("name")),
+        model.and_then(|m| m.get("id")),
+        scope.get("surface"),
+        scope.get("name"),
+    ]
+    .into_iter()
+    .find_map(clean_text)
+}
+
+fn limit_label(entry: &Value) -> Option<String> {
+    let kind = clean_text(entry.get("kind"));
+    let scope = limit_scope(entry.get("scope"));
+    let name = clean_text(entry.get("name"));
+
+    if let Some(kind) = kind {
+        let key = normalize_key(kind);
+        if matches!(key.as_str(), "extra_usage" | "spend") {
+            return None;
+        }
+        if let Some(label) = canonical_kind_label(&key, scope) {
+            return Some(label);
+        }
+    }
+
+    if let Some(name) = name {
+        let key = normalize_key(name);
+        if matches!(key.as_str(), "extra_usage" | "spend") {
+            return None;
+        }
+        if let Some(label) = canonical_kind_label(&key, scope) {
+            return Some(label);
+        }
+        return Some(match scope {
+            Some(scope) => {
+                let formatted = format_scope(scope);
+                if name
+                    .to_ascii_lowercase()
+                    .contains(&formatted.to_ascii_lowercase())
+                {
+                    name.to_owned()
+                } else {
+                    format!("{formatted} {name}")
+                }
+            }
+            None => name.to_owned(),
+        });
+    }
+
+    match (scope, kind) {
+        (Some(scope), Some(kind)) => {
+            let formatted_scope = format_scope(scope);
+            let humanized_kind = humanize_words(kind);
+            if humanized_kind
+                .to_ascii_lowercase()
+                .contains(&formatted_scope.to_ascii_lowercase())
+            {
+                Some(capitalize_first(&humanized_kind))
+            } else {
+                Some(format!("{formatted_scope} {humanized_kind}"))
+            }
+        }
+        (None, Some(kind)) => Some(capitalize_first(&humanize_words(kind))),
+        (Some(scope), None) => Some(format_scope(scope)),
+        (None, None) => None,
+    }
+}
+
+fn canonical_kind_label(key: &str, scope: Option<&str>) -> Option<String> {
+    let scoped_or = |default_scope: &str, cadence: &str| match scope {
+        Some(scope) => format!("{} {cadence}", format_scope(scope)),
+        None => format!("{default_scope} {cadence}"),
+    };
+    match key {
+        "five_hour" | "5h" | "5_hour" | "5_hours" | "session" | "session_5h" => Some(match scope {
+            Some(scope) => format!("{} 5 hours", format_scope(scope)),
+            None => "5 hours".into(),
+        }),
+        "seven_day" | "7d" | "7_day" | "7_days" | "weekly" => Some(match scope {
+            Some(scope) => format!("{} weekly", format_scope(scope)),
+            None => "Weekly".into(),
+        }),
+        "seven_day_opus" | "opus_weekly" => Some(scoped_or("Opus", "weekly")),
+        "seven_day_sonnet" | "sonnet_weekly" => Some(scoped_or("Sonnet", "weekly")),
+        "seven_day_cowork" | "cowork_weekly" => Some(scoped_or("Cowork", "weekly")),
+        "seven_day_oauth_apps" | "oauth_apps_weekly" => Some(scoped_or("OAuth apps", "weekly")),
+        _ => None,
+    }
+}
+
+fn normalize_key(raw: &str) -> String {
+    raw.split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '_' | '-'))
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn format_scope(scope: &str) -> String {
+    match normalize_key(scope).as_str() {
+        "oauth_apps" => "OAuth apps".into(),
+        "cowork" => "Cowork".into(),
+        "opus" => "Opus".into(),
+        "sonnet" => "Sonnet".into(),
+        "haiku" => "Haiku".into(),
+        _ => {
+            if scope.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+                capitalize_first(&humanize_words(scope))
+            } else {
+                scope.to_owned()
+            }
+        }
+    }
+}
+
+fn humanize_words(raw: &str) -> String {
+    raw.split(['_', ' '])
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn capitalize_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 
@@ -292,6 +470,211 @@ mod tests {
             Claude
                 .parse(&json!({"five_hour":{"utilization":null}}))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn seven_day_cowork_is_parsed_as_cowork_weekly() {
+        let usage = Claude
+            .parse(&json!({
+                "seven_day_cowork": {
+                    "utilization": 33.5,
+                    "resets_at": "2026-10-01T00:00:00Z"
+                }
+            }))
+            .unwrap();
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].label, "Cowork weekly");
+        assert_eq!(usage.meters[0].used_percent, 33.5);
+        assert!(usage.meters[0].resets_at.is_some());
+    }
+
+    #[test]
+    fn limits_only_response_parses_active_inactive_scoped_and_explicit_percent100() {
+        let usage = Claude
+            .parse(&json!({
+                "limits": [
+                    {
+                        "kind": "five_hour",
+                        "percent": 18,
+                        "resets_at": "2026-10-01T00:00:00Z",
+                        "is_active": true
+                    },
+                    {
+                        "kind": "seven_day",
+                        "percent": 4,
+                        "resets_at": "2026-10-07T00:00:00Z",
+                        "is_active": false
+                    },
+                    {
+                        "kind": "seven_day",
+                        "scope": {"model": {"display_name": "Haiku 4.5"}},
+                        "percent": 1,
+                        "is_active": false
+                    },
+                    {
+                        "kind": "seven_day",
+                        "scope": {"model": {"id": "claude-sonnet-4-5"}},
+                        "utilization": 0.5
+                    },
+                    {
+                        "kind": "seven_day",
+                        "scope": {"surface": "cowork"},
+                        "percent": 12
+                    },
+                    {
+                        "name": "Daily burst",
+                        "percent": 0
+                    }
+                ]
+            }))
+            .unwrap();
+
+        let summary = usage
+            .meters
+            .iter()
+            .map(|meter| {
+                (
+                    meter.label.as_str(),
+                    meter.used_percent,
+                    meter.resets_at.is_some(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                ("5 hours", 18.0, true),
+                ("Weekly", 4.0, true),
+                ("Haiku 4.5 weekly", 1.0, false),
+                ("claude-sonnet-4-5 weekly", 0.5, false),
+                ("Cowork weekly", 12.0, false),
+                ("Daily burst", 0.0, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn limits_deduplicates_against_top_level_and_earlier_entries_and_ignores_non_quota() {
+        let usage = Claude
+            .parse(&json!({
+                "five_hour": {"utilization": 18.0, "resets_at": "2026-10-01T00:00:00Z"},
+                "seven_day": {"utilization": 4.0, "resets_at": "2026-10-07T00:00:00Z"},
+                "seven_day_cowork": {"utilization": 22.0, "resets_at": "2026-10-07T00:00:00Z"},
+                "nimbus_quill": {"utilization": 0.0, "resets_at": null},
+                "extra_usage": {"is_enabled": true, "utilization": 90.0},
+                "spend": {"percent": 50, "enabled": true},
+                "limits": [
+                    {"kind": "session", "percent": 99, "is_active": true},
+                    {"kind": "weekly", "percent": 88, "is_active": false},
+                    {"kind": "seven_day", "scope": {"display_name": "Cowork"}, "percent": 77},
+                    {"kind": "seven_day", "scope": {"model": {"display_name": "Sonnet 4.5"}}, "percent": null},
+                    {"kind": "seven_day", "scope": {"model": {"display_name": "Sonnet 4.5"}}, "percent": 15},
+                    {"kind": "weekly", "scope": {"model": {"display_name": "sonnet 4.5"}}, "percent": 55},
+                    {"kind": "extra_usage", "percent": 40},
+                    {"kind": "spend", "percent": 50}
+                ]
+            }))
+            .unwrap();
+
+        let summary = usage
+            .meters
+            .iter()
+            .map(|meter| (meter.label.as_str(), meter.used_percent))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                ("5 hours", 18.0),
+                ("Weekly", 4.0),
+                ("Cowork weekly", 22.0),
+                ("Sonnet 4.5 weekly", 15.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn limits_skips_invalid_percentages_and_redacted_or_blank_labels() {
+        let payload = json!({
+            "limits": [
+                {"kind": "five_hour"},
+                {"kind": "five_hour", "percent": null},
+                {"kind": "five_hour", "percent": -1},
+                {"kind": "five_hour", "percent": 100.1},
+                {"kind": "five_hour", "percent": "invalid"},
+                {"kind": "<redacted>", "group": "<redacted>", "percent": 18, "is_active": true},
+                {
+                    "kind": " <REDACTED> ",
+                    "scope": {"model": {"id": null}, "surface": null},
+                    "percent": 3,
+                    "is_active": false
+                },
+                {
+                    "kind": "   ",
+                    "name": "",
+                    "scope": {"display_name": "<redacted>"},
+                    "percent": 10
+                },
+                null
+            ]
+        });
+        assert!(Claude.parse(&payload).is_err());
+
+        // When a valid entry accompanies invalid/redacted ones, only the valid entry is emitted.
+        let mixed = json!({
+            "limits": [
+                {"kind": "five_hour", "percent": null},
+                {"kind": "five_hour", "percent": -5, "utilization": 20},
+                {"kind": "<redacted>", "percent": 50},
+                {"kind": "five_hour", "percent": 25}
+            ]
+        });
+        let usage = Claude.parse(&mixed).unwrap();
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].label, "5 hours");
+        assert_eq!(usage.meters[0].used_percent, 25.0);
+    }
+
+    #[test]
+    fn limits_handles_scope_fallbacks_unknown_kinds_and_combined_keys() {
+        let usage = Claude
+            .parse(&json!({
+                "seven_day_cowork": null,
+                "seven_day_oauth_apps": {"utilization": 10.0},
+                "limits": [
+                    {"kind": "seven_day_cowork", "percent": null, "utilization": 30},
+                    {"kind": "seven_day", "scope": {"surface": "oauth_apps"}, "percent": 90},
+                    {
+                        "kind": "seven_day",
+                        "scope": {"model": {"display_name": "<redacted>", "id": "claude-opus-4"}},
+                        "percent": 100
+                    },
+                    {"kind": "five_hour", "scope": "Opus", "percent": 7},
+                    {"kind": "monthly_tokens", "percent": 42},
+                    {
+                        "name": "Sonnet 4.5 daily",
+                        "scope": {"model": {"display_name": "Sonnet 4.5"}},
+                        "percent": 11
+                    }
+                ]
+            }))
+            .unwrap();
+
+        let summary = usage
+            .meters
+            .iter()
+            .map(|meter| (meter.label.as_str(), meter.used_percent))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            vec![
+                ("OAuth apps weekly", 10.0),
+                ("Cowork weekly", 30.0),
+                ("claude-opus-4 weekly", 100.0),
+                ("Opus 5 hours", 7.0),
+                ("Monthly tokens", 42.0),
+                ("Sonnet 4.5 daily", 11.0),
+            ]
         );
     }
 

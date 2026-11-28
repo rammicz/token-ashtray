@@ -121,6 +121,22 @@ Notes:
   do not refresh eagerly on every poll.
 - Absent `claudeAiOauth` inside an otherwise present file means the user is
   logged in by another method — treat as `Reconnect`, not `Error`.
+- Supported top-level quota windows: `five_hour` ("5 hours"), `seven_day`
+  ("Weekly"), `seven_day_opus` ("Opus weekly"), `seven_day_sonnet` ("Sonnet
+  weekly"), `seven_day_oauth_apps` ("OAuth apps weekly"), and
+  `seven_day_cowork` ("Cowork weekly").
+- Dynamic `limits[]` entries are parsed using explicit `0–100` percentage
+  scaling (`percent` or `utilization`) and `resets_at` / `reset_at`, deriving
+  neutral labels from `kind`, `scope` (`scope.model.display_name`,
+  `scope.display_name`, `scope.model.id`, `scope.surface`), and `name`. Entries
+  with `is_active: false` are retained (in observed payloads, `is_active`
+  identifies the tightest window rather than enabled state). Entries are
+  deduplicated case-insensitively against already-parsed top-level windows and
+  earlier `limits[]` entries; entries with missing/invalid percentages or with
+  all-missing, blank, or `"<redacted>"` label fields are skipped rather than
+  defaulting to `0%` or synthetic labels.
+- Billing and unrecognised codename fields (`extra_usage`, `spend`, e.g.
+  `nimbus_quill`) are ignored and never emitted as quota meters.
 
 ---
 
