@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use token_ashtray::{
-    model::{ProviderCard, Status, duration_label},
+    model::{ProviderCard, Status, reset_countdown_label},
     poll::{PollSettings, Poller, SharedBoard, initial_board},
     updates::Updater,
 };
@@ -45,9 +45,7 @@ fn snapshot(board: &SharedBoard, preferences: &BoardPreferences) -> TraySnapshot
                 reset: card
                     .tightest_meter()
                     .and_then(|meter| meter.resets_at)
-                    .map(|at| {
-                        duration_label((at - time::OffsetDateTime::now_utc()).whole_seconds())
-                    }),
+                    .map(|at| reset_countdown_label(at, time::OffsetDateTime::now_utc())),
             })
             .collect(),
         quota_display_mode: preferences.quota_display_mode,
@@ -620,5 +618,16 @@ mod quota_display_tests {
             .meters
             .clear();
         assert_eq!(snapshot(&board, &preferences).providers[0].used, None);
+    }
+
+    #[test]
+    fn host_tray_formats_passed_reset_as_resets_soon() {
+        let board = cached_board();
+        board.write().unwrap().get_mut("fixture").unwrap().meters[0].resets_at =
+            Some(time::OffsetDateTime::now_utc() - time::Duration::seconds(5));
+        let description = snapshot(&board, &BoardPreferences::default()).description();
+        assert_eq!(description, "Fixture 75% Remaining · resets soon");
+        assert!(!description.contains("0s"));
+        assert!(!description.contains("resets in Resets soon"));
     }
 }

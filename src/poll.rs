@@ -103,6 +103,10 @@ impl RefreshWork {
     }
 }
 
+const POLL_TIMEOUT: Duration = Duration::from_secs(20);
+const MIN_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const MANUAL_REFRESH_DEBOUNCE: Duration = Duration::from_secs(5);
+
 pub struct Poller {
     runtime: Option<Runtime>,
     feedback: Arc<Mutex<RefreshWork>>,
@@ -118,15 +122,18 @@ impl Poller {
         settings: PollSettings,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> std::result::Result<Self, String> {
-        Self::with_providers(
+        Self::with_intervals(
             board,
             settings,
             wake,
             providers::all(),
-            Duration::from_secs(20),
-            Duration::from_secs(60),
+            POLL_TIMEOUT,
+            MIN_POLL_INTERVAL,
+            MANUAL_REFRESH_DEBOUNCE,
         )
     }
+    // Kept for unit tests and the refresh_feedback_probe example.
+    #[allow(dead_code)]
     pub(crate) fn with_providers(
         board: SharedBoard,
         settings: PollSettings,
@@ -134,6 +141,17 @@ impl Poller {
         providers: Vec<Arc<dyn Provider>>,
         timeout: Duration,
         minimum: Duration,
+    ) -> std::result::Result<Self, String> {
+        Self::with_intervals(board, settings, wake, providers, timeout, minimum, minimum)
+    }
+    pub(crate) fn with_intervals(
+        board: SharedBoard,
+        settings: PollSettings,
+        wake: Arc<dyn Fn() + Send + Sync>,
+        providers: Vec<Arc<dyn Provider>>,
+        timeout: Duration,
+        minimum: Duration,
+        manual_debounce: Duration,
     ) -> std::result::Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -167,6 +185,7 @@ impl Poller {
                 },
                 timeout,
                 minimum,
+                manual_debounce,
             ));
         }
         Ok(Self {
@@ -222,6 +241,27 @@ struct Controls {
     refresh: watch::Receiver<u64>,
     shutdown: watch::Receiver<bool>,
 }
+fn allows_immediate_manual_refresh(
+    board: &SharedBoard,
+    id: &str,
+    now: time::OffsetDateTime,
+) -> bool {
+    board
+        .read()
+        .ok()
+        .and_then(|board| {
+            board.get(id).map(|card| {
+                matches!(card.status, Status::Reconnect | Status::Error)
+                    || card
+                        .meters
+                        .iter()
+                        .any(|meter| meter.resets_at.is_some_and(|at| at <= now))
+            })
+        })
+        .unwrap_or(false)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn provider_loop(
     provider: Arc<dyn Provider>,
     client: reqwest::Client,
@@ -230,6 +270,7 @@ async fn provider_loop(
     mut control: Controls,
     timeout: Duration,
     minimum: Duration,
+    manual_debounce: Duration,
 ) {
     let id = provider.descriptor().id;
     let mut due = Instant::now();
@@ -252,7 +293,18 @@ async fn provider_loop(
                 // The notification may arrive after the adopted attempt finishes.
                 // Only an actual waiting request is allowed to reschedule work.
                 if control.feedback.lock().expect("refresh lock").waiting(id) {
-                    due = last_attempt.map(|t| t + minimum).unwrap_or_else(Instant::now).max(backoff);
+                    let manual_due = if allows_immediate_manual_refresh(
+                        &board,
+                        id,
+                        time::OffsetDateTime::now_utc(),
+                    ) {
+                        Instant::now()
+                    } else {
+                        last_attempt
+                            .map(|t| t + manual_debounce)
+                            .unwrap_or_else(Instant::now)
+                    };
+                    due = manual_due.max(backoff);
                 }
                 continue;
             },
@@ -681,5 +733,298 @@ mod feedback_tests {
         );
         fast.notify_one();
         slow.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod manual_refresh_ux_tests {
+    use super::*;
+    use crate::{
+        model::Meter,
+        providers::{Credentials, Descriptor, Usage},
+    };
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    enum ScriptedOutcome {
+        Live {
+            resets_at: Vec<Option<time::OffsetDateTime>>,
+        },
+        Reconnect,
+        Error {
+            retry_after_secs: Option<u64>,
+        },
+    }
+
+    struct Scripted {
+        id: &'static str,
+        calls: Arc<AtomicUsize>,
+        outcomes: Mutex<Vec<ScriptedOutcome>>,
+    }
+
+    impl Scripted {
+        fn new(id: &'static str, calls: Arc<AtomicUsize>, outcomes: Vec<ScriptedOutcome>) -> Self {
+            Self {
+                id,
+                calls,
+                outcomes: Mutex::new(outcomes),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for Scripted {
+        fn descriptor(&self) -> Descriptor {
+            Descriptor {
+                id: self.id,
+                name: self.id,
+                link: "",
+                login: "login",
+            }
+        }
+        fn discover(&self) -> providers::Result<Credentials> {
+            Ok(Credentials::token("synthetic".into()))
+        }
+        async fn fetch(
+            &self,
+            _: &reqwest::Client,
+            _: &mut Credentials,
+        ) -> providers::Result<Value> {
+            let index = self.calls.fetch_add(1, Ordering::SeqCst);
+            let outcomes = self.outcomes.lock().unwrap();
+            let outcome = outcomes
+                .get(index)
+                .or_else(|| outcomes.last())
+                .expect("at least one scripted outcome");
+            match outcome {
+                ScriptedOutcome::Live { resets_at } => Ok(serde_json::json!({
+                    "resets_at": resets_at
+                        .iter()
+                        .map(|ts| ts.map(|at| at.unix_timestamp()))
+                        .collect::<Vec<_>>(),
+                })),
+                ScriptedOutcome::Reconnect => Err(ProviderError {
+                    status: Status::Reconnect,
+                    message: "login".into(),
+                    retry_after_secs: None,
+                }),
+                ScriptedOutcome::Error { retry_after_secs } => Err(ProviderError {
+                    status: Status::Error,
+                    message: "synthetic error".into(),
+                    retry_after_secs: *retry_after_secs,
+                }),
+            }
+        }
+        fn parse(&self, value: &Value) -> providers::Result<Usage> {
+            let meters = value
+                .get("resets_at")
+                .and_then(|v| v.as_array())
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| Meter {
+                            label: format!("Window {index}"),
+                            used_percent: 25.0,
+                            resets_at: entry
+                                .as_i64()
+                                .and_then(|ts| time::OffsetDateTime::from_unix_timestamp(ts).ok()),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(Usage {
+                meters,
+                ..Default::default()
+            })
+        }
+    }
+
+    fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while !predicate() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        predicate()
+    }
+
+    #[test]
+    fn manual_debounce_is_decoupled_from_scheduled_minimum_for_live_cards() {
+        assert_eq!(MIN_POLL_INTERVAL, Duration::from_secs(60));
+        assert_eq!(MANUAL_REFRESH_DEBOUNCE, Duration::from_secs(5));
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let board = Arc::new(RwLock::new(BTreeMap::new()));
+        let future = time::OffsetDateTime::now_utc() + time::Duration::hours(2);
+        let poller = Poller::with_intervals(
+            board.clone(),
+            PollSettings {
+                interval_secs: 1,
+                hidden: HashSet::new(),
+            },
+            Arc::new(|| {}),
+            vec![Arc::new(Scripted::new(
+                "healthy",
+                calls.clone(),
+                vec![ScriptedOutcome::Live {
+                    resets_at: vec![Some(future)],
+                }],
+            ))],
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+            Duration::from_millis(120),
+        )
+        .unwrap();
+        assert!(wait_until(Duration::from_secs(2), || {
+            !poller.feedback().active() && calls.load(Ordering::SeqCst) == 1
+        }));
+        // Scheduled minimum (60s) still blocks auto-polling even though interval_secs=1.
+        std::thread::sleep(Duration::from_millis(40));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // Manual refresh on a healthy Live card respects manual_debounce (120ms), not 60s.
+        poller.refresh().unwrap();
+        assert_eq!(
+            poller.feedback().providers["healthy"],
+            RefreshPhase::Waiting
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            wait_until(Duration::from_millis(600), || {
+                calls.load(Ordering::SeqCst) == 2 && !poller.feedback().active()
+            }),
+            "manual refresh must finish after manual_debounce rather than waiting 60s"
+        );
+    }
+
+    #[test]
+    fn manual_refresh_runs_immediately_from_reconnect_and_non_429_error() {
+        for (id, first_outcome, expected_status) in [
+            ("reauth", ScriptedOutcome::Reconnect, Status::Reconnect),
+            (
+                "errored",
+                ScriptedOutcome::Error {
+                    retry_after_secs: None,
+                },
+                Status::Error,
+            ),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let board = Arc::new(RwLock::new(BTreeMap::new()));
+            let poller = Poller::with_providers(
+                board.clone(),
+                PollSettings::default(),
+                Arc::new(|| {}),
+                vec![Arc::new(Scripted::new(
+                    id,
+                    calls.clone(),
+                    vec![
+                        first_outcome,
+                        ScriptedOutcome::Live {
+                            resets_at: vec![None],
+                        },
+                    ],
+                ))],
+                Duration::from_secs(1),
+                Duration::from_secs(60),
+            )
+            .unwrap();
+            assert!(wait_until(Duration::from_secs(2), || {
+                board
+                    .read()
+                    .unwrap()
+                    .get(id)
+                    .is_some_and(|card| card.status == expected_status)
+            }));
+            poller.refresh().unwrap();
+            assert!(
+                wait_until(Duration::from_millis(400), || {
+                    calls.load(Ordering::SeqCst) == 2
+                        && board.read().unwrap()[id].status == Status::Live
+                }),
+                "{id}: manual refresh must run immediately after {expected_status:?} instead of waiting 60s"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_refresh_runs_immediately_when_a_meter_reset_has_passed() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let board = Arc::new(RwLock::new(BTreeMap::new()));
+        let passed = time::OffsetDateTime::now_utc() - time::Duration::seconds(5);
+        let future = time::OffsetDateTime::now_utc() + time::Duration::hours(2);
+        let poller = Poller::with_providers(
+            board.clone(),
+            PollSettings::default(),
+            Arc::new(|| {}),
+            vec![Arc::new(Scripted::new(
+                "resetter",
+                calls.clone(),
+                vec![
+                    ScriptedOutcome::Live {
+                        resets_at: vec![Some(future), Some(passed)],
+                    },
+                    ScriptedOutcome::Live {
+                        resets_at: vec![Some(future)],
+                    },
+                ],
+            ))],
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        assert!(wait_until(Duration::from_secs(2), || {
+            !poller.feedback().active() && calls.load(Ordering::SeqCst) == 1
+        }));
+        poller.refresh().unwrap();
+        assert!(
+            wait_until(Duration::from_millis(400), || {
+                calls.load(Ordering::SeqCst) == 2
+            }),
+            "manual refresh must run immediately when any meter has resets_at <= now instead of waiting 60s"
+        );
+    }
+
+    #[test]
+    fn manual_refresh_preserves_429_backoff_under_error_status_even_with_short_debounce() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let board = Arc::new(RwLock::new(BTreeMap::new()));
+        let poller = Poller::with_intervals(
+            board.clone(),
+            PollSettings::default(),
+            Arc::new(|| {}),
+            vec![Arc::new(Scripted::new(
+                "rate-limited",
+                calls.clone(),
+                vec![ScriptedOutcome::Error {
+                    retry_after_secs: Some(3600),
+                }],
+            ))],
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+            Duration::from_millis(10),
+        )
+        .unwrap();
+        assert!(wait_until(Duration::from_secs(2), || {
+            board
+                .read()
+                .unwrap()
+                .get("rate-limited")
+                .is_some_and(|card| card.status == Status::Error)
+                && !poller.feedback().active()
+        }));
+        std::thread::sleep(Duration::from_millis(30));
+        poller.refresh().unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "429 Retry-After backoff must never be bypassed by manual refresh even under Status::Error"
+        );
+        assert_eq!(
+            poller.feedback().providers["rate-limited"],
+            RefreshPhase::Waiting
+        );
     }
 }

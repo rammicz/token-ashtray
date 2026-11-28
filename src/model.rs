@@ -131,6 +131,8 @@ pub(crate) fn whole_percent_label(exact: f32, whole: f32) -> String {
     }
 }
 
+pub const RESETS_SOON: &str = "Resets soon";
+
 pub fn duration_label(seconds: i64) -> String {
     let seconds = seconds.max(0);
     if seconds >= 86400 {
@@ -141,6 +143,24 @@ pub fn duration_label(seconds: i64) -> String {
         format!("{}m", seconds / 60)
     } else {
         format!("{seconds}s")
+    }
+}
+
+pub fn reset_countdown_label(resets_at: OffsetDateTime, now: OffsetDateTime) -> String {
+    let seconds = (resets_at - now).whole_seconds();
+    if seconds <= 0 {
+        RESETS_SOON.into()
+    } else {
+        duration_label(seconds)
+    }
+}
+
+pub fn reset_detail_label(resets_at: OffsetDateTime, now: OffsetDateTime) -> String {
+    let seconds = (resets_at - now).whole_seconds();
+    if seconds <= 0 {
+        RESETS_SOON.into()
+    } else {
+        format!("Resets in {}", duration_label(seconds))
     }
 }
 
@@ -235,5 +255,41 @@ mod tests {
             fetched_at: None,
         };
         assert_eq!(card.remaining(), Some(28.0));
+    }
+
+    #[test]
+    fn reset_helpers_format_passed_imminent_and_future_timestamps_without_altering_duration_label()
+    {
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        for offset in [
+            time::Duration::seconds(-60),
+            time::Duration::milliseconds(-500),
+            time::Duration::ZERO,
+            time::Duration::milliseconds(500),
+            time::Duration::milliseconds(999),
+        ] {
+            let resets_at = now + offset;
+            assert_eq!(reset_countdown_label(resets_at, now), "Resets soon");
+            assert_eq!(reset_detail_label(resets_at, now), "Resets soon");
+        }
+        assert_eq!(
+            reset_countdown_label(now + time::Duration::seconds(1), now),
+            "1s"
+        );
+        assert_eq!(
+            reset_detail_label(now + time::Duration::seconds(1), now),
+            "Resets in 1s"
+        );
+        assert_eq!(
+            reset_countdown_label(now + time::Duration::hours(1), now),
+            "1h 0m"
+        );
+        assert_eq!(
+            reset_detail_label(now + time::Duration::hours(1), now),
+            "Resets in 1h 0m"
+        );
+        // `duration_label` stays unchanged for `last_updated_label` and Codex window labels.
+        assert_eq!(duration_label(0), "0s");
+        assert_eq!(duration_label(-5), "0s");
     }
 }

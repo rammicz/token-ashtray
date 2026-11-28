@@ -34,7 +34,7 @@ use crate::{
     },
 };
 use token_ashtray::{
-    model::{ProviderCard, Status, duration_label},
+    model::{ProviderCard, Status, duration_label, reset_countdown_label, reset_detail_label},
     poll::{PollSettings, Poller, SharedBoard, initial_board},
     updates::{Failure, Unavailable, UpdateStatus, Updater, apply::MAX_ATTEMPTS},
 };
@@ -1388,7 +1388,7 @@ fn quota_now() -> OffsetDateTime {
     OffsetDateTime::now_utc()
 }
 fn reset_label(time: OffsetDateTime) -> String {
-    duration_label((time - quota_now()).whole_seconds())
+    reset_countdown_label(time, quota_now())
 }
 fn restore_position(
     window: &WindowPreferences,
@@ -2729,7 +2729,7 @@ fn draw_quota_grid(ui: &mut egui::Ui, card: &ProviderCard, status: Status, mode:
 fn quota_detail(meter: &token_ashtray::model::Meter, status: Status) -> String {
     let reset = meter
         .resets_at
-        .map(|at| format!("Resets in {}", reset_label(at)))
+        .map(|at| reset_detail_label(at, quota_now()))
         .unwrap_or_else(|| "Reset unavailable".into());
     let cue = quota_status(meter, status);
     if cue.is_empty() {

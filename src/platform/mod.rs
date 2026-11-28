@@ -65,7 +65,13 @@ impl TraySnapshot {
                         provider
                             .reset
                             .as_ref()
-                            .map(|reset| format!(" · resets in {reset}"))
+                            .map(|reset| {
+                                if reset.eq_ignore_ascii_case(crate::model::RESETS_SOON) {
+                                    " · resets soon".into()
+                                } else {
+                                    format!(" · resets in {reset}")
+                                }
+                            })
                             .unwrap_or_default()
                     )
                 }
@@ -123,6 +129,24 @@ mod quota_display_tests {
             );
             assert_eq!(snapshot.primary_remaining, Some(remaining));
         }
+    }
+
+    #[test]
+    fn native_tooltip_formats_passed_reset_as_resets_soon_without_duplication() {
+        let snapshot = TraySnapshot {
+            providers: vec![TrayProvider {
+                name: "Fixture".into(),
+                used: Some(25.0),
+                reset: Some("Resets soon".into()),
+            }],
+            primary_remaining: Some(75.0),
+            any_readable: true,
+            ..Default::default()
+        };
+        let description = snapshot.description();
+        assert_eq!(description, "Fixture 75% Remaining · resets soon");
+        assert!(!description.contains("resets in Resets soon"));
+        assert!(!description.contains("0s"));
     }
 }
 

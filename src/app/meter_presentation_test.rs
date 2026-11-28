@@ -532,3 +532,79 @@ fn standalone_tray_takes_the_reset_from_the_tightest_meter() {
     assert_eq!(snapshot.providers[0].used, Some(80.0));
     assert_eq!(snapshot.providers[0].reset.as_deref(), Some("2h 0m"));
 }
+
+#[test]
+fn passed_and_imminent_resets_render_resets_soon_across_row_detail_accesskit_and_tray() {
+    let _clock = frozen_quota_clock();
+    for offset in [
+        time::Duration::seconds(-5),
+        time::Duration::ZERO,
+        time::Duration::milliseconds(500),
+    ] {
+        let mut provider = card(25.0);
+        provider.meters[0].resets_at = Some(quota_now() + offset);
+
+        assert_eq!(
+            quota_detail(&provider.meters[0], Status::Live),
+            "Resets soon",
+            "offset={offset:?}"
+        );
+        assert_eq!(
+            quota_detail(&provider.meters[0], Status::Stale),
+            "Resets soon · Stale cached quota",
+            "offset={offset:?}"
+        );
+
+        let ctx = Context::default();
+        configure_visuals(&ctx);
+        ctx.enable_accesskit();
+        let output = ctx.run(accessibility_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                draw_board(
+                    ui,
+                    "Token Ashtray",
+                    &[provider.clone()],
+                    &BoardPreferences::default(),
+                    false,
+                    &mut false,
+                    &mut false,
+                );
+            });
+        });
+        let visible = text(&output);
+        assert!(
+            visible.contains("Resets soon"),
+            "meter row should show Resets soon (offset={offset:?}): {visible}"
+        );
+        assert!(
+            !visible.contains("0s") && !visible.contains("Resets in"),
+            "meter row must not show 0s or Resets in (offset={offset:?}): {visible}"
+        );
+
+        let nodes = accessibility_nodes(&output);
+        let gauge = nodes
+            .iter()
+            .find(|(_, n)| accessibility_text(n).starts_with("Weekly:"))
+            .expect("meter accessibility node")
+            .1;
+        let gauge_text = accessibility_text(gauge);
+        assert!(
+            gauge_text.contains("Resets soon"),
+            "AccessKit gauge should contain Resets soon (offset={offset:?}): {gauge_text}"
+        );
+        assert!(
+            !gauge_text.contains("Resets in 0s") && !gauge_text.contains("Resets in Resets soon"),
+            "AccessKit gauge must not duplicate or show 0s (offset={offset:?}): {gauge_text}"
+        );
+
+        let tray = local_tray_snapshot(&[provider], &BoardPreferences::default()).description();
+        assert!(
+            tray.contains(" · resets soon"),
+            "standalone tray tooltip should show ' · resets soon' (offset={offset:?}): {tray}"
+        );
+        assert!(
+            !tray.contains("0s") && !tray.contains("resets in Resets soon"),
+            "standalone tray tooltip must not show 0s or duplicate wording (offset={offset:?}): {tray}"
+        );
+    }
+}
