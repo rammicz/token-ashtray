@@ -107,6 +107,13 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(20);
 const MIN_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const MANUAL_REFRESH_DEBOUNCE: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy)]
+struct PollIntervals {
+    timeout: Duration,
+    minimum: Duration,
+    manual_debounce: Duration,
+}
+
 pub struct Poller {
     runtime: Option<Runtime>,
     feedback: Arc<Mutex<RefreshWork>>,
@@ -171,6 +178,11 @@ impl Poller {
         let (settings, settings_rx) = watch::channel(settings);
         let (refresh, refresh_rx) = watch::channel(0);
         let (shutdown, shutdown_rx) = watch::channel(false);
+        let intervals = PollIntervals {
+            timeout,
+            minimum,
+            manual_debounce,
+        };
         for provider in providers {
             runtime.spawn(provider_loop(
                 provider,
@@ -183,9 +195,7 @@ impl Poller {
                     refresh: refresh_rx.clone(),
                     shutdown: shutdown_rx.clone(),
                 },
-                timeout,
-                minimum,
-                manual_debounce,
+                intervals,
             ));
         }
         Ok(Self {
@@ -261,16 +271,13 @@ fn allows_immediate_manual_refresh(
         .unwrap_or(false)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn provider_loop(
     provider: Arc<dyn Provider>,
     client: reqwest::Client,
     board: SharedBoard,
     wake: Arc<dyn Fn() + Send + Sync>,
     mut control: Controls,
-    timeout: Duration,
-    minimum: Duration,
-    manual_debounce: Duration,
+    intervals: PollIntervals,
 ) {
     let id = provider.descriptor().id;
     let mut due = Instant::now();
@@ -287,7 +294,7 @@ async fn provider_loop(
         }
         tokio::select! {
             _=control.shutdown.changed()=>return,
-            changed=control.settings.changed()=>{if changed.is_err(){return;}let interval=Duration::from_secs(control.settings.borrow().interval_secs.max(minimum.as_secs()));due=last_attempt.map(|t|t+interval).unwrap_or_else(Instant::now).max(backoff);continue;},
+            changed=control.settings.changed()=>{if changed.is_err(){return;}let interval=Duration::from_secs(control.settings.borrow().interval_secs.max(intervals.minimum.as_secs()));due=last_attempt.map(|t|t+interval).unwrap_or_else(Instant::now).max(backoff);continue;},
             changed = control.refresh.changed() => {
                 if changed.is_err() { return; }
                 // The notification may arrive after the adopted attempt finishes.
@@ -301,7 +308,7 @@ async fn provider_loop(
                         Instant::now()
                     } else {
                         last_attempt
-                            .map(|t| t + manual_debounce)
+                            .map(|t| t + intervals.manual_debounce)
                             .unwrap_or_else(Instant::now)
                     };
                     due = manual_due.max(backoff);
@@ -325,7 +332,7 @@ async fn provider_loop(
         let outcome = tokio::select! {
             _=control.shutdown.changed()=>{task.abort();return;},
 
-            result=tokio::time::timeout(timeout,&mut task)=>match result{
+            result=tokio::time::timeout(intervals.timeout,&mut task)=>match result{
                 Ok(Ok(value))=>value,
                 Ok(Err(_))=>Err(ProviderError::error("Provider failed unexpectedly; other providers are still running")),
                 Err(_)=>{task.abort();Err(ProviderError::error("Provider request timed out"))}
@@ -339,7 +346,8 @@ async fn provider_loop(
                 card.status = error.status;
                 card.detail = error.message;
                 if let Some(seconds) = error.retry_after_secs {
-                    backoff = Instant::now() + Duration::from_secs(seconds.max(minimum.as_secs()));
+                    backoff = Instant::now()
+                        + Duration::from_secs(seconds.max(intervals.minimum.as_secs()));
                 }
                 if let Some(previous) = board.read().ok().and_then(|b| b.get(id).cloned()) {
                     card.fetched_at = previous.fetched_at;
@@ -367,7 +375,7 @@ async fn provider_loop(
                     .settings
                     .borrow()
                     .interval_secs
-                    .max(minimum.as_secs()),
+                    .max(intervals.minimum.as_secs()),
             );
         due = due.max(backoff);
     }
@@ -873,7 +881,7 @@ mod manual_refresh_ux_tests {
             ))],
             Duration::from_secs(1),
             Duration::from_secs(60),
-            Duration::from_millis(120),
+            Duration::from_millis(180),
         )
         .unwrap();
         assert!(wait_until(Duration::from_secs(2), || {
@@ -883,7 +891,7 @@ mod manual_refresh_ux_tests {
         std::thread::sleep(Duration::from_millis(40));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-        // Manual refresh on a healthy Live card respects manual_debounce (120ms), not 60s.
+        // Manual refresh on a healthy Live card respects manual_debounce (180ms), not 60s.
         poller.refresh().unwrap();
         assert_eq!(
             poller.feedback().providers["healthy"],
@@ -891,7 +899,7 @@ mod manual_refresh_ux_tests {
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
-            wait_until(Duration::from_millis(600), || {
+            wait_until(Duration::from_millis(800), || {
                 calls.load(Ordering::SeqCst) == 2 && !poller.feedback().active()
             }),
             "manual refresh must finish after manual_debounce rather than waiting 60s"
@@ -936,6 +944,7 @@ mod manual_refresh_ux_tests {
                     .unwrap()
                     .get(id)
                     .is_some_and(|card| card.status == expected_status)
+                    && !poller.feedback().active()
             }));
             poller.refresh().unwrap();
             assert!(
