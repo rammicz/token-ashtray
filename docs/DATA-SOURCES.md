@@ -170,12 +170,31 @@ Notes:
 
 - The credit view supplies `creditUsagePercent`, `currentPeriod.type` and
   `currentPeriod.end` (or `billingPeriodEnd`), plus optional `productUsage`
-  percentages. Recognized cadence is shown only when reported. Valid product
-  attribution makes this a shared credits meter: observed `GrokBuild`, `GrokChat`
-  and `GrokImagine` are displayed as Grok Build, Grok Chat and Grok Imagine.
-  Attribution stays Used in either display mode and creates no extra allowance
-  or reset. Missing/invalid attribution is omitted; unrelated recognized billing
-  meters survive. No free Chat counter or reset is inferred from an absent field.
+  percentages. Because unified billing uses proto3 JSON serialization, zero-valued
+  scalars are omitted immediately after a period reset: when `isUnifiedBillingUser`
+  is `true`, `currentPeriod` is a non-empty object, and the `creditUsagePercent`
+  key is omitted from `/v1/billing?format=credits`, the adapter emits a `0%` meter
+  for the reported cadence with `currentPeriod.end` (falling back to
+  `billingPeriodEnd`) as the reset time. Present-but-invalid `creditUsagePercent`
+  values, missing/empty/non-object `currentPeriod`, legacy `/v1/billing` payloads,
+  and unknown shapes never fabricate `0%`. Recognized cadence is shown only when
+  reported. Valid product attribution makes this a shared credits meter: observed
+  `GrokBuild`, `GrokChat` and `GrokImagine` are displayed as Grok Build, Grok Chat
+  and Grok Imagine. Attribution stays Used in either display mode and creates no
+  extra allowance or reset. Missing/invalid attribution is omitted; unrelated
+  recognized billing meters survive. No free Chat counter or reset is inferred
+  from an absent field.
+- `/v1/billing?format=credits` is the primary usage request; `/v1/user?include=subscription`
+  and legacy `/v1/billing` run concurrently with a shorter 10-second per-request
+  timeout and fail soft (degrading to `null`) when `/v1/billing?format=credits`
+  succeeds. HTTP `401` (`Reconnect`, taking precedence over non-auth failures) and
+  HTTP `429` (`Retry-After` backoff, keeping the maximum backoff across concurrent
+  failures) still propagate from any of the three endpoints.
+- Requests keep sending `x-grok-client-version` (required by the proxy's
+  version-gate check per `xai-org/grok-build`), resolved read-only from
+  `~/.grok/version.json` (`version`, falling back to `stable_version`) after
+  strict semver validation, with a fallback floor of `1.0.45` when the file is
+  absent, unreadable, or invalid.
 - [Grok's usage FAQ](https://docs.x.ai/grok/faq#usage-limits) describes paid
   SuperGrok's weekly pool and product breakdown, while free Chat/Voice limits
   have their own schedules. This policy does not document new response fields.
