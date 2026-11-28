@@ -84,10 +84,12 @@ async fn fetch_at(
 ) -> Result<Value> {
     let mut payload = fetch_with_reactive_refresh(
         credentials,
-        D,
-        refresh_endpoint,
-        true,
-        no_proxy_refresh,
+        RefreshTarget {
+            descriptor: D,
+            endpoint: refresh_endpoint,
+            camel_case: true,
+            no_proxy: no_proxy_refresh,
+        },
         build_refresh_body,
         |token| async move {
             response(
@@ -321,9 +323,37 @@ mod tests {
     const CLAUDE_PROFILE_JSON: &str = r#"{"organization":{"plan_display_name":"Max"}}"#;
     const CLAUDE_REFRESH_JSON: &str = r#"{"access_token":"synthetic-new-access","refresh_token":"synthetic-new-refresh","expires_in":3600}"#;
 
+    async fn run_claude_local_fetch(
+        client: &Client,
+        credentials: &mut Credentials,
+        usage_replies: Vec<crate::providers::test_http::ScriptedReply>,
+        profile_replies: Vec<crate::providers::test_http::ScriptedReply>,
+        refresh_replies: Vec<crate::providers::test_http::ScriptedReply>,
+    ) -> (Result<Value>, Vec<String>, Vec<String>, Vec<String>) {
+        use crate::providers::test_http::MockServer;
+        let usage_srv = MockServer::spawn("/api/oauth/usage", usage_replies);
+        let profile_srv = MockServer::spawn("/api/oauth/profile", profile_replies);
+        let refresh_srv = MockServer::spawn("/v1/oauth/token", refresh_replies);
+        let result = fetch_at(
+            client,
+            credentials,
+            usage_srv.url(),
+            profile_srv.url(),
+            refresh_srv.url(),
+            true,
+        )
+        .await;
+        (
+            result,
+            usage_srv.finish(),
+            profile_srv.finish(),
+            refresh_srv.finish(),
+        )
+    }
+
     #[tokio::test]
     async fn reactive_refresh_on_401_rotates_disk_and_retries_usage_and_live_plan() {
-        use crate::providers::test_http::{MockServer, ScriptedReply, local_client};
+        use crate::providers::test_http::{ScriptedReply, local_client};
         let client = local_client();
         let future_ms = (time::OffsetDateTime::now_utc().unix_timestamp() + 3600) * 1000;
 
@@ -352,36 +382,18 @@ mod tests {
             .unwrap();
             let mut credentials = discover_at(path.clone(), &mut Vec::new()).unwrap();
 
-            let usage_srv = MockServer::spawn(
-                "/api/oauth/usage",
+            let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
+                &client,
+                &mut credentials,
                 vec![
                     ScriptedReply::status(401, r#"{"error":"revoked"}"#),
                     ScriptedReply::ok(CLAUDE_USAGE_JSON),
                 ],
-            );
-            let profile_srv = MockServer::spawn(
-                "/api/oauth/profile",
                 vec![ScriptedReply::ok(CLAUDE_PROFILE_JSON)],
-            );
-            let refresh_srv = MockServer::spawn(
-                "/v1/oauth/token",
                 vec![ScriptedReply::ok(CLAUDE_REFRESH_JSON)],
-            );
-
-            let payload = fetch_at(
-                &client,
-                &mut credentials,
-                usage_srv.url(),
-                profile_srv.url(),
-                refresh_srv.url(),
-                true,
             )
-            .await
-            .expect("reactive refresh on 401 should rotate and succeed");
-
-            let usage_reqs = usage_srv.finish();
-            let profile_reqs = profile_srv.finish();
-            let refresh_reqs = refresh_srv.finish();
+            .await;
+            let payload = result.expect("reactive refresh on 401 should rotate and succeed");
 
             assert_eq!(usage_reqs.len(), 2);
             assert!(
@@ -428,7 +440,7 @@ mod tests {
 
     #[tokio::test]
     async fn reactive_refresh_stops_without_looping_on_second_401_and_after_proactive_refresh() {
-        use crate::providers::test_http::{MockServer, ScriptedReply, local_client};
+        use crate::providers::test_http::{ScriptedReply, local_client};
         let client = local_client();
         let now_ms = time::OffsetDateTime::now_utc().unix_timestamp() * 1000;
 
@@ -446,36 +458,25 @@ mod tests {
         )
         .unwrap();
         let mut credentials = discover_at(path.clone(), &mut Vec::new()).unwrap();
-        let usage_srv = MockServer::spawn(
-            "/api/oauth/usage",
+        let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
+            &client,
+            &mut credentials,
             vec![
                 ScriptedReply::status(401, r#"{"error":"secret-body-401"}"#),
                 ScriptedReply::status(401, r#"{"error":"secret-body-retry"}"#),
             ],
-        );
-        let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-        let refresh_srv = MockServer::spawn(
-            "/v1/oauth/token",
+            vec![],
             vec![ScriptedReply::ok(CLAUDE_REFRESH_JSON)],
-        );
-
-        let err = fetch_at(
-            &client,
-            &mut credentials,
-            usage_srv.url(),
-            profile_srv.url(),
-            refresh_srv.url(),
-            true,
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Reconnect);
         assert!(!err.message.contains("synthetic-old-access"));
         assert!(!err.message.contains("synthetic-new-access"));
         assert!(!err.message.contains("secret-body"));
-        assert_eq!(usage_srv.finish().len(), 2);
-        assert_eq!(refresh_srv.finish().len(), 1);
-        assert_eq!(profile_srv.finish().len(), 0);
+        assert_eq!(usage_reqs.len(), 2);
+        assert_eq!(refresh_reqs.len(), 1);
+        assert_eq!(profile_reqs.len(), 0);
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved["claudeAiOauth"]["accessToken"],
@@ -496,41 +497,29 @@ mod tests {
         )
         .unwrap();
         let mut credentials = discover_at(path, &mut Vec::new()).unwrap();
-        let usage_srv = MockServer::spawn(
-            "/api/oauth/usage",
-            vec![ScriptedReply::status(401, r#"{"error":"still-401"}"#)],
-        );
-        let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-        let refresh_srv = MockServer::spawn(
-            "/v1/oauth/token",
-            vec![ScriptedReply::ok(CLAUDE_REFRESH_JSON)],
-        );
-
-        let err = fetch_at(
+        let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
             &client,
             &mut credentials,
-            usage_srv.url(),
-            profile_srv.url(),
-            refresh_srv.url(),
-            true,
+            vec![ScriptedReply::status(401, r#"{"error":"still-401"}"#)],
+            vec![],
+            vec![ScriptedReply::ok(CLAUDE_REFRESH_JSON)],
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Reconnect);
-        let usage_reqs = usage_srv.finish();
         assert_eq!(usage_reqs.len(), 1);
         assert!(
             usage_reqs[0]
                 .to_ascii_lowercase()
                 .contains("authorization: bearer synthetic-new-access")
         );
-        assert_eq!(refresh_srv.finish().len(), 1);
-        assert_eq!(profile_srv.finish().len(), 0);
+        assert_eq!(refresh_reqs.len(), 1);
+        assert_eq!(profile_reqs.len(), 0);
     }
 
     #[tokio::test]
     async fn terminal_reconnect_rate_limit_backoff_and_concurrent_cli_edit() {
-        use crate::providers::test_http::{MockServer, ScriptedReply, local_client};
+        use crate::providers::test_http::{ScriptedReply, local_client};
         let client = local_client();
         let future_ms = (time::OffsetDateTime::now_utc().unix_timestamp() + 3600) * 1000;
 
@@ -544,29 +533,22 @@ mod tests {
         )
         .unwrap();
         let mut credentials = discover_at(path, &mut Vec::new()).unwrap();
-        let usage_srv = MockServer::spawn(
-            "/api/oauth/usage",
-            vec![ScriptedReply::status(401, r#"{"error":"revoked"}"#)],
-        );
-        let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-        let refresh_srv = MockServer::spawn("/v1/oauth/token", vec![]);
-        let err = fetch_at(
+        let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
             &client,
             &mut credentials,
-            usage_srv.url(),
-            profile_srv.url(),
-            refresh_srv.url(),
-            true,
+            vec![ScriptedReply::status(401, r#"{"error":"revoked"}"#)],
+            vec![],
+            vec![],
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Reconnect);
         assert!(err.message.contains("HTTP 401"));
-        assert_eq!(usage_srv.finish().len(), 1);
-        assert_eq!(refresh_srv.finish().len(), 0);
-        assert_eq!(profile_srv.finish().len(), 0);
+        assert_eq!(usage_reqs.len(), 1);
+        assert_eq!(refresh_reqs.len(), 0);
+        assert_eq!(profile_reqs.len(), 0);
 
-        // Blank accessToken with !near_expiry() and present refreshToken fails before HTTP (0 usage, 0 refresh).
+        // Blank accessToken with !near_expiry() and present refreshToken fails before HTTP.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("credentials.json");
         std::fs::write(
@@ -580,23 +562,12 @@ mod tests {
         )
         .unwrap();
         let mut credentials = discover_at(path, &mut Vec::new()).unwrap();
-        let usage_srv = MockServer::spawn("/api/oauth/usage", vec![]);
-        let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-        let refresh_srv = MockServer::spawn("/v1/oauth/token", vec![]);
-        let err = fetch_at(
-            &client,
-            &mut credentials,
-            usage_srv.url(),
-            profile_srv.url(),
-            refresh_srv.url(),
-            true,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.status, Status::Reconnect);
-        assert_eq!(usage_srv.finish().len(), 0);
-        assert_eq!(refresh_srv.finish().len(), 0);
-        assert_eq!(profile_srv.finish().len(), 0);
+        let (result, usage_reqs, profile_reqs, refresh_reqs) =
+            run_claude_local_fetch(&client, &mut credentials, vec![], vec![], vec![]).await;
+        assert_eq!(result.unwrap_err().status, Status::Reconnect);
+        assert_eq!(usage_reqs.len(), 0);
+        assert_eq!(refresh_reqs.len(), 0);
+        assert_eq!(profile_reqs.len(), 0);
 
         // Refresh returns 400/401/403 -> terminal Reconnect, disk untouched, no secrets.
         for status in [400u16, 401, 403] {
@@ -610,35 +581,25 @@ mod tests {
             .to_string();
             std::fs::write(&path, &original).unwrap();
             let mut credentials = discover_at(path.clone(), &mut Vec::new()).unwrap();
-            let usage_srv = MockServer::spawn(
-                "/api/oauth/usage",
+            let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
+                &client,
+                &mut credentials,
                 vec![ScriptedReply::status(401, r#"{"error":"revoked"}"#)],
-            );
-            let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-            let refresh_srv = MockServer::spawn(
-                "/v1/oauth/token",
+                vec![],
                 vec![ScriptedReply::status(
                     status,
                     r#"{"error":"invalid_grant","secret":"synthetic-leak"}"#,
                 )],
-            );
-            let err = fetch_at(
-                &client,
-                &mut credentials,
-                usage_srv.url(),
-                profile_srv.url(),
-                refresh_srv.url(),
-                true,
             )
-            .await
-            .unwrap_err();
+            .await;
+            let err = result.unwrap_err();
             assert_eq!(err.status, Status::Reconnect, "status {status}");
             assert!(!err.message.contains("synthetic-old-refresh"));
             assert!(!err.message.contains("synthetic-leak"));
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-            assert_eq!(usage_srv.finish().len(), 1);
-            assert_eq!(refresh_srv.finish().len(), 1);
-            assert_eq!(profile_srv.finish().len(), 0);
+            assert_eq!(usage_reqs.len(), 1);
+            assert_eq!(refresh_reqs.len(), 1);
+            assert_eq!(profile_reqs.len(), 0);
         }
 
         // Usage 429 preserves Retry-After and triggers 0 refresh calls.
@@ -655,82 +616,59 @@ mod tests {
         )
         .unwrap();
         let mut credentials = discover_at(path.clone(), &mut Vec::new()).unwrap();
-        let usage_srv =
-            MockServer::spawn("/api/oauth/usage", vec![ScriptedReply::rate_limit("45")]);
-        let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-        let refresh_srv = MockServer::spawn("/v1/oauth/token", vec![]);
-        let err = fetch_at(
+        let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
             &client,
             &mut credentials,
-            usage_srv.url(),
-            profile_srv.url(),
-            refresh_srv.url(),
-            true,
+            vec![ScriptedReply::rate_limit("45")],
+            vec![],
+            vec![],
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Error);
         assert_eq!(err.retry_after_secs, Some(45));
-        assert_eq!(usage_srv.finish().len(), 1);
-        assert_eq!(refresh_srv.finish().len(), 0);
-        assert_eq!(profile_srv.finish().len(), 0);
+        assert_eq!(usage_reqs.len(), 1);
+        assert_eq!(refresh_reqs.len(), 0);
+        assert_eq!(profile_reqs.len(), 0);
 
         // Usage 401 -> Refresh 429 preserves Retry-After: 60.
         let mut credentials = discover_at(path.clone(), &mut Vec::new()).unwrap();
-        let usage_srv = MockServer::spawn(
-            "/api/oauth/usage",
-            vec![ScriptedReply::status(401, r#"{"error":"revoked"}"#)],
-        );
-        let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-        let refresh_srv =
-            MockServer::spawn("/v1/oauth/token", vec![ScriptedReply::rate_limit("60")]);
-        let err = fetch_at(
+        let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
             &client,
             &mut credentials,
-            usage_srv.url(),
-            profile_srv.url(),
-            refresh_srv.url(),
-            true,
+            vec![ScriptedReply::status(401, r#"{"error":"revoked"}"#)],
+            vec![],
+            vec![ScriptedReply::rate_limit("60")],
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Error);
         assert_eq!(err.retry_after_secs, Some(60));
-        assert_eq!(usage_srv.finish().len(), 1);
-        assert_eq!(refresh_srv.finish().len(), 1);
-        assert_eq!(profile_srv.finish().len(), 0);
+        assert_eq!(usage_reqs.len(), 1);
+        assert_eq!(refresh_reqs.len(), 1);
+        assert_eq!(profile_reqs.len(), 0);
 
         // Concurrent CLI edit during reactive refresh returns Error and preserves CLI file.
         let mut credentials = discover_at(path.clone(), &mut Vec::new()).unwrap();
         let cli_updated =
             r#"{"claudeAiOauth":{"accessToken":"synthetic-cli-newer","refreshToken":"cli-r"}}"#;
         let path_for_hook = path.clone();
-        let usage_srv = MockServer::spawn(
-            "/api/oauth/usage",
+        let (result, usage_reqs, profile_reqs, refresh_reqs) = run_claude_local_fetch(
+            &client,
+            &mut credentials,
             vec![ScriptedReply::status(401, r#"{"error":"revoked"}"#)],
-        );
-        let profile_srv = MockServer::spawn("/api/oauth/profile", vec![]);
-        let refresh_srv = MockServer::spawn(
-            "/v1/oauth/token",
+            vec![],
             vec![ScriptedReply::ok(CLAUDE_REFRESH_JSON).with_hook(move || {
                 std::fs::write(&path_for_hook, cli_updated).unwrap();
             })],
-        );
-        let err = fetch_at(
-            &client,
-            &mut credentials,
-            usage_srv.url(),
-            profile_srv.url(),
-            refresh_srv.url(),
-            true,
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Error);
         assert!(!err.message.contains("synthetic-new-access"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), cli_updated);
-        assert_eq!(usage_srv.finish().len(), 1);
-        assert_eq!(refresh_srv.finish().len(), 1);
-        assert_eq!(profile_srv.finish().len(), 0);
+        assert_eq!(usage_reqs.len(), 1);
+        assert_eq!(refresh_reqs.len(), 1);
+        assert_eq!(profile_reqs.len(), 0);
     }
 }

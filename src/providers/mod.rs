@@ -355,12 +355,30 @@ async fn refresh_safely_inner(
     .await
 }
 
-pub async fn fetch_with_reactive_refresh<F, Fut>(
-    credentials: &mut Credentials,
+struct RefreshTarget<'a> {
     descriptor: Descriptor,
-    refresh_endpoint: &str,
+    endpoint: &'a str,
     camel_case: bool,
-    no_proxy_refresh: bool,
+    no_proxy: bool,
+}
+
+impl RefreshTarget<'_> {
+    async fn refresh(&self, credentials: &mut Credentials, body: RefreshBody) -> Result<()> {
+        refresh_safely_inner(
+            credentials,
+            self.endpoint.to_owned(),
+            self.descriptor,
+            body,
+            self.camel_case,
+            self.no_proxy,
+        )
+        .await
+    }
+}
+
+async fn fetch_with_reactive_refresh<F, Fut>(
+    credentials: &mut Credentials,
+    target: RefreshTarget<'_>,
     build_refresh: impl Fn(&Credentials) -> Result<RefreshBody>,
     mut fetch_once: F,
 ) -> Result<Value>
@@ -371,38 +389,22 @@ where
     let mut refreshed = false;
     if credentials.near_expiry() {
         let body = build_refresh(credentials)?;
-        refresh_safely_inner(
-            credentials,
-            refresh_endpoint.to_owned(),
-            descriptor,
-            body,
-            camel_case,
-            no_proxy_refresh,
-        )
-        .await?;
+        target.refresh(credentials, body).await?;
         refreshed = true;
     }
     // Validate access_token before issuing usage requests so any Status::Reconnect
     // returned by `fetch_once` strictly represents an HTTP 401 from the server.
-    let token = credentials.access(descriptor)?.to_owned();
+    let token = credentials.access(target.descriptor)?.to_owned();
     match fetch_once(token).await {
         Ok(value) => Ok(value),
         Err(error)
             if error.status == Status::Reconnect
                 && !refreshed
-                && credentials.refresh(descriptor).is_ok() =>
+                && credentials.refresh(target.descriptor).is_ok() =>
         {
             let body = build_refresh(credentials)?;
-            refresh_safely_inner(
-                credentials,
-                refresh_endpoint.to_owned(),
-                descriptor,
-                body,
-                camel_case,
-                no_proxy_refresh,
-            )
-            .await?;
-            let rotated = credentials.access(descriptor)?.to_owned();
+            target.refresh(credentials, body).await?;
+            let rotated = credentials.access(target.descriptor)?.to_owned();
             fetch_once(rotated).await
         }
         Err(error) => Err(error),

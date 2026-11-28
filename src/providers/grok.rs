@@ -68,10 +68,12 @@ async fn fetch_at(
         .map(str::to_owned);
     fetch_with_reactive_refresh(
         credentials,
-        D,
-        refresh_endpoint,
-        false,
-        no_proxy_refresh,
+        RefreshTarget {
+            descriptor: D,
+            endpoint: refresh_endpoint,
+            camel_case: false,
+            no_proxy: no_proxy_refresh,
+        },
         grok_refresh_body,
         |token| {
             let user_id = user_id.clone();
@@ -1203,9 +1205,47 @@ mod tests {
         credentials
     }
 
+    async fn run_grok_local_fetch(
+        client: &Client,
+        credentials: &mut Credentials,
+        user_replies: Vec<crate::providers::test_http::ScriptedReply>,
+        billing_replies: Vec<crate::providers::test_http::ScriptedReply>,
+        credits_replies: Vec<crate::providers::test_http::ScriptedReply>,
+        refresh_replies: Vec<crate::providers::test_http::ScriptedReply>,
+    ) -> (Result<Value>, [Vec<String>; 3], Vec<String>) {
+        use crate::providers::test_http::MockServer;
+        let user_srv = MockServer::spawn("/v1/user?include=subscription", user_replies);
+        let billing_srv = MockServer::spawn("/v1/billing", billing_replies);
+        let credits_srv = MockServer::spawn("/v1/billing?format=credits", credits_replies);
+        let refresh_srv = MockServer::spawn("/oauth2/token", refresh_replies);
+        let result = fetch_at(
+            client,
+            credentials,
+            GrokEndpoints {
+                user: user_srv.url(),
+                billing: billing_srv.url(),
+                credits: credits_srv.url(),
+            },
+            refresh_srv.url(),
+            DEFAULT_CLIENT_VERSION,
+            Duration::from_secs(2),
+            true,
+        )
+        .await;
+        (
+            result,
+            [
+                user_srv.finish(),
+                billing_srv.finish(),
+                credits_srv.finish(),
+            ],
+            refresh_srv.finish(),
+        )
+    }
+
     #[tokio::test]
     async fn reactive_refresh_on_401_rotates_disk_and_retries_once() {
-        use crate::providers::test_http::{MockServer, ScriptedReply};
+        use crate::providers::test_http::ScriptedReply;
         let client = local_client();
         let future = time::OffsetDateTime::now_utc().unix_timestamp() + 3600;
 
@@ -1230,50 +1270,25 @@ mod tests {
         .unwrap();
         let mut credentials = load_grok_credentials(path.clone());
 
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
+        let (result, [user_reqs, billing_reqs, credits_reqs], refresh_reqs) = run_grok_local_fetch(
+            &client,
+            &mut credentials,
             vec![
                 ScriptedReply::status(401, r#"{"error":"revoked"}"#),
                 ScriptedReply::ok(USER_TIER_JSON),
             ],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
             vec![
                 ScriptedReply::status(401, r#"{"error":"revoked"}"#),
                 ScriptedReply::ok(LEGACY_ZERO_BILLING_JSON),
             ],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
             vec![
                 ScriptedReply::status(401, r#"{"error":"revoked"}"#),
                 ScriptedReply::ok(POST_RESET_CREDITS_JSON),
             ],
-        );
-        let refresh_srv =
-            MockServer::spawn("/oauth2/token", vec![ScriptedReply::ok(GROK_REFRESH_JSON)]);
-
-        let payload = fetch_at(
-            &client,
-            &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![ScriptedReply::ok(GROK_REFRESH_JSON)],
         )
-        .await
-        .expect("Grok reactive refresh on 401 should rotate and succeed");
-
-        let user_reqs = user_srv.finish();
-        let billing_reqs = billing_srv.finish();
-        let credits_reqs = credits_srv.finish();
-        let refresh_reqs = refresh_srv.finish();
+        .await;
+        let payload = result.expect("Grok reactive refresh on 401 should rotate and succeed");
 
         assert_eq!(refresh_reqs.len(), 1);
         assert!(refresh_reqs[0].contains("grant_type=refresh_token"));
@@ -1319,50 +1334,31 @@ mod tests {
         .unwrap();
         let mut credentials = load_grok_credentials(path.clone());
 
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
+        let (result, [user_reqs, billing_reqs, credits_reqs], refresh_reqs) = run_grok_local_fetch(
+            &client,
+            &mut credentials,
             vec![
                 ScriptedReply::status(401, r#"{"error":"revoked"}"#),
                 ScriptedReply::ok(USER_TIER_JSON),
             ],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
             vec![
                 ScriptedReply::ok(LEGACY_ZERO_BILLING_JSON),
                 ScriptedReply::ok(LEGACY_ZERO_BILLING_JSON),
             ],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
             vec![
                 ScriptedReply::ok(POST_RESET_CREDITS_JSON),
                 ScriptedReply::ok(POST_RESET_CREDITS_JSON),
             ],
-        );
-        let refresh_srv =
-            MockServer::spawn("/oauth2/token", vec![ScriptedReply::ok(GROK_REFRESH_JSON)]);
-
-        let payload = fetch_at(
-            &client,
-            &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![ScriptedReply::ok(GROK_REFRESH_JSON)],
         )
-        .await
-        .expect("401 on auxiliary /user should trigger reactive refresh and succeed");
+        .await;
+        let payload =
+            result.expect("401 on auxiliary /user should trigger reactive refresh and succeed");
 
-        assert_eq!(refresh_srv.finish().len(), 1);
-        assert_eq!(user_srv.finish().len(), 2);
-        assert_eq!(billing_srv.finish().len(), 2);
-        assert_eq!(credits_srv.finish().len(), 2);
+        assert_eq!(refresh_reqs.len(), 1);
+        assert_eq!(user_reqs.len(), 2);
+        assert_eq!(billing_reqs.len(), 2);
+        assert_eq!(credits_reqs.len(), 2);
         assert_eq!(
             Grok.parse(&payload).unwrap().plan.as_deref(),
             Some("X Premium Plus")
@@ -1373,7 +1369,7 @@ mod tests {
 
     #[tokio::test]
     async fn reactive_refresh_enforces_oidc_issuer_guard_and_terminal_semantics() {
-        use crate::providers::test_http::{MockServer, ScriptedReply};
+        use crate::providers::test_http::ScriptedReply;
         let client = local_client();
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
 
@@ -1389,40 +1385,20 @@ mod tests {
         .to_string();
         std::fs::write(&path, &original).unwrap();
         let mut credentials = load_grok_credentials(path.clone());
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let refresh_srv = MockServer::spawn("/oauth2/token", vec![]);
-        let err = fetch_at(
+        let (result, [_, _, credits_reqs], refresh_reqs) = run_grok_local_fetch(
             &client,
             &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![],
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Reconnect);
         assert!(err.message.contains("Unrecognised Grok OIDC issuer"));
-        assert_eq!(refresh_srv.finish().len(), 0);
-        assert_eq!(credits_srv.finish().len(), 1);
-        let _ = user_srv.finish();
-        let _ = billing_srv.finish();
+        assert_eq!(refresh_reqs.len(), 0);
+        assert_eq!(credits_reqs.len(), 1);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 
         // 2) Retry returns 401 -> no loop (refresh called once, Reconnect returned).
@@ -1439,49 +1415,27 @@ mod tests {
         )
         .unwrap();
         let mut credentials = load_grok_credentials(path.clone());
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
-            vec![
-                ScriptedReply::status(401, "unauthorized"),
-                ScriptedReply::status(401, "still unauthorized"),
-            ],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
-            vec![
-                ScriptedReply::status(401, "unauthorized"),
-                ScriptedReply::status(401, "still unauthorized"),
-            ],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
-            vec![
-                ScriptedReply::status(401, "unauthorized"),
-                ScriptedReply::status(401, "still unauthorized"),
-            ],
-        );
-        let refresh_srv =
-            MockServer::spawn("/oauth2/token", vec![ScriptedReply::ok(GROK_REFRESH_JSON)]);
-        let err = fetch_at(
+        let (result, [_, _, credits_reqs], refresh_reqs) = run_grok_local_fetch(
             &client,
             &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![
+                ScriptedReply::status(401, "unauthorized"),
+                ScriptedReply::status(401, "still unauthorized"),
+            ],
+            vec![
+                ScriptedReply::status(401, "unauthorized"),
+                ScriptedReply::status(401, "still unauthorized"),
+            ],
+            vec![
+                ScriptedReply::status(401, "unauthorized"),
+                ScriptedReply::status(401, "still unauthorized"),
+            ],
+            vec![ScriptedReply::ok(GROK_REFRESH_JSON)],
         )
-        .await
-        .unwrap_err();
-        assert_eq!(err.status, Status::Reconnect);
-        assert_eq!(refresh_srv.finish().len(), 1);
-        assert_eq!(credits_srv.finish().len(), 2);
-        let _ = user_srv.finish();
-        let _ = billing_srv.finish();
+        .await;
+        assert_eq!(result.unwrap_err().status, Status::Reconnect);
+        assert_eq!(refresh_reqs.len(), 1);
+        assert_eq!(credits_reqs.len(), 2);
         let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved["access_token"], "synthetic-new-access");
 
@@ -1499,40 +1453,18 @@ mod tests {
         )
         .unwrap();
         let mut credentials = load_grok_credentials(path);
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let refresh_srv =
-            MockServer::spawn("/oauth2/token", vec![ScriptedReply::ok(GROK_REFRESH_JSON)]);
-        let err = fetch_at(
+        let (result, [_, _, credits_reqs], refresh_reqs) = run_grok_local_fetch(
             &client,
             &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::ok(GROK_REFRESH_JSON)],
         )
-        .await
-        .unwrap_err();
-        assert_eq!(err.status, Status::Reconnect);
-        assert_eq!(refresh_srv.finish().len(), 1);
-        assert_eq!(credits_srv.finish().len(), 1);
-        let _ = user_srv.finish();
-        let _ = billing_srv.finish();
+        .await;
+        assert_eq!(result.unwrap_err().status, Status::Reconnect);
+        assert_eq!(refresh_reqs.len(), 1);
+        assert_eq!(credits_reqs.len(), 1);
 
         // 4) Missing refresh_token on 401 -> Reconnect with 0 refresh calls.
         let dir = tempfile::tempdir().unwrap();
@@ -1543,39 +1475,18 @@ mod tests {
         )
         .unwrap();
         let mut credentials = load_grok_credentials(path);
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let refresh_srv = MockServer::spawn("/oauth2/token", vec![]);
-        let err = fetch_at(
+        let (result, [_, _, credits_reqs], refresh_reqs) = run_grok_local_fetch(
             &client,
             &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![],
         )
-        .await
-        .unwrap_err();
-        assert_eq!(err.status, Status::Reconnect);
-        assert_eq!(refresh_srv.finish().len(), 0);
-        assert_eq!(credits_srv.finish().len(), 1);
-        let _ = user_srv.finish();
-        let _ = billing_srv.finish();
+        .await;
+        assert_eq!(result.unwrap_err().status, Status::Reconnect);
+        assert_eq!(refresh_reqs.len(), 0);
+        assert_eq!(credits_reqs.len(), 1);
 
         // 5) Refresh returns 400/401/403 -> Reconnect, disk untouched, no secrets.
         for status in [400u16, 401, 403] {
@@ -1589,48 +1500,24 @@ mod tests {
             .to_string();
             std::fs::write(&path, &original).unwrap();
             let mut credentials = load_grok_credentials(path.clone());
-            let user_srv = MockServer::spawn(
-                "/v1/user?include=subscription",
+            let (result, _, refresh_reqs) = run_grok_local_fetch(
+                &client,
+                &mut credentials,
                 vec![ScriptedReply::status(401, "unauthorized")],
-            );
-            let billing_srv = MockServer::spawn(
-                "/v1/billing",
                 vec![ScriptedReply::status(401, "unauthorized")],
-            );
-            let credits_srv = MockServer::spawn(
-                "/v1/billing?format=credits",
                 vec![ScriptedReply::status(401, "unauthorized")],
-            );
-            let refresh_srv = MockServer::spawn(
-                "/oauth2/token",
                 vec![ScriptedReply::status(
                     status,
                     r#"{"error":"invalid_grant","secret":"synthetic-leak"}"#,
                 )],
-            );
-            let err = fetch_at(
-                &client,
-                &mut credentials,
-                GrokEndpoints {
-                    user: user_srv.url(),
-                    billing: billing_srv.url(),
-                    credits: credits_srv.url(),
-                },
-                refresh_srv.url(),
-                DEFAULT_CLIENT_VERSION,
-                Duration::from_secs(2),
-                true,
             )
-            .await
-            .unwrap_err();
+            .await;
+            let err = result.unwrap_err();
             assert_eq!(err.status, Status::Reconnect, "status {status}");
             assert!(!err.message.contains("synthetic-old-refresh"));
             assert!(!err.message.contains("synthetic-leak"));
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-            assert_eq!(refresh_srv.finish().len(), 1);
-            let _ = user_srv.finish();
-            let _ = billing_srv.finish();
-            let _ = credits_srv.finish();
+            assert_eq!(refresh_reqs.len(), 1);
         }
 
         // 6) Usage 429 preserves Retry-After (0 refresh calls); 401 -> Refresh 429 preserves Retry-After.
@@ -1647,120 +1534,54 @@ mod tests {
         )
         .unwrap();
         let mut credentials = load_grok_credentials(path.clone());
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
-            vec![ScriptedReply::ok(USER_TIER_JSON)],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
-            vec![ScriptedReply::ok(LEGACY_ZERO_BILLING_JSON)],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
-            vec![ScriptedReply::rate_limit("45")],
-        );
-        let refresh_srv = MockServer::spawn("/oauth2/token", vec![]);
-        let err = fetch_at(
+        let (result, _, refresh_reqs) = run_grok_local_fetch(
             &client,
             &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![ScriptedReply::ok(USER_TIER_JSON)],
+            vec![ScriptedReply::ok(LEGACY_ZERO_BILLING_JSON)],
+            vec![ScriptedReply::rate_limit("45")],
+            vec![],
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Error);
         assert_eq!(err.retry_after_secs, Some(45));
-        assert_eq!(refresh_srv.finish().len(), 0);
-        let _ = user_srv.finish();
-        let _ = billing_srv.finish();
-        let _ = credits_srv.finish();
+        assert_eq!(refresh_reqs.len(), 0);
 
         let mut credentials = load_grok_credentials(path.clone());
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
-            vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let refresh_srv = MockServer::spawn("/oauth2/token", vec![ScriptedReply::rate_limit("60")]);
-        let err = fetch_at(
+        let (result, _, refresh_reqs) = run_grok_local_fetch(
             &client,
             &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::status(401, "unauthorized")],
+            vec![ScriptedReply::rate_limit("60")],
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Error);
         assert_eq!(err.retry_after_secs, Some(60));
-        assert_eq!(refresh_srv.finish().len(), 1);
-        let _ = user_srv.finish();
-        let _ = billing_srv.finish();
-        let _ = credits_srv.finish();
+        assert_eq!(refresh_reqs.len(), 1);
 
         // 7) Concurrent CLI edit during reactive refresh preserves CLI file and returns Error.
         let mut credentials = load_grok_credentials(path.clone());
         let cli_updated = r#"{"access_token":"synthetic-cli-newer","refresh_token":"cli-r"}"#;
         let path_for_hook = path.clone();
-        let user_srv = MockServer::spawn(
-            "/v1/user?include=subscription",
+        let (result, _, refresh_reqs) = run_grok_local_fetch(
+            &client,
+            &mut credentials,
             vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let billing_srv = MockServer::spawn(
-            "/v1/billing",
             vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let credits_srv = MockServer::spawn(
-            "/v1/billing?format=credits",
             vec![ScriptedReply::status(401, "unauthorized")],
-        );
-        let refresh_srv = MockServer::spawn(
-            "/oauth2/token",
             vec![ScriptedReply::ok(GROK_REFRESH_JSON).with_hook(move || {
                 std::fs::write(&path_for_hook, cli_updated).unwrap();
             })],
-        );
-        let err = fetch_at(
-            &client,
-            &mut credentials,
-            GrokEndpoints {
-                user: user_srv.url(),
-                billing: billing_srv.url(),
-                credits: credits_srv.url(),
-            },
-            refresh_srv.url(),
-            DEFAULT_CLIENT_VERSION,
-            Duration::from_secs(2),
-            true,
         )
-        .await
-        .unwrap_err();
+        .await;
+        let err = result.unwrap_err();
         assert_eq!(err.status, Status::Error);
         assert!(!err.message.contains("synthetic-new-access"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), cli_updated);
-        assert_eq!(refresh_srv.finish().len(), 1);
-        let _ = user_srv.finish();
-        let _ = billing_srv.finish();
-        let _ = credits_srv.finish();
+        assert_eq!(refresh_reqs.len(), 1);
     }
 }
